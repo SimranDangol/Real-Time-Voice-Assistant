@@ -50,6 +50,31 @@ export function useMic() {
   // Audio queue for sequential sentence playback
   const speechQueueRef = useRef<string[]>([]);
   const isPlayingRef = useRef<boolean>(false);
+  const nextPlayTimeRef = useRef<number>(0);
+
+  const playPcm16Chunk = useCallback(async (data: ArrayBuffer | Blob) => {
+    const ctx = contextRef.current;
+    if (!ctx) return;
+
+    const arrayBuffer = data instanceof Blob ? await data.arrayBuffer() : data;
+    const int16 = new Int16Array(arrayBuffer);
+    const float32 = new Float32Array(int16.length);
+
+    for (let i = 0; i < int16.length; i++) {
+      float32[i] = int16[i] / 32768.0;
+    }
+
+    const audioBuffer = ctx.createBuffer(1, float32.length, 16000);
+    audioBuffer.getChannelData(0).set(float32);
+
+    const source = ctx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(ctx.destination);
+
+    const startTime = Math.max(ctx.currentTime, nextPlayTimeRef.current);
+    source.start(startTime);
+    nextPlayTimeRef.current = startTime + audioBuffer.duration;
+  }, []);
 
   const playNextSentence = useCallback(() => {
     if (speechQueueRef.current.length === 0) {
@@ -173,6 +198,7 @@ export function useMic() {
       if (msg.type === "interrupted") {
         speechQueueRef.current = [];
         isPlayingRef.current = false;
+        nextPlayTimeRef.current = 0;
         window.speechSynthesis.cancel();
       }
 
@@ -232,7 +258,11 @@ export function useMic() {
     };
 
     ws.onmessage = (e: MessageEvent) => {
-      if (typeof e.data === "string") handleMessage(e.data);
+      if (typeof e.data === "string") {
+        handleMessage(e.data);
+      } else if (e.data instanceof ArrayBuffer || e.data instanceof Blob) {
+        void playPcm16Chunk(e.data);
+      }
     };
 
     ws.onerror = () => {
@@ -264,6 +294,7 @@ export function useMic() {
     assistantPartialIdRef.current = null;
     speechQueueRef.current = [];
     isPlayingRef.current = false;
+    nextPlayTimeRef.current = 0;
     window.speechSynthesis.cancel();
     setIsListening(false);
   }

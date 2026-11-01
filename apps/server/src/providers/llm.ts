@@ -21,12 +21,22 @@ export async function streamAssistantReply({
   signal,
   log,
 }: StreamReplyOptions): Promise<void> {
-  const groqKey = process.env.GROQ_API_KEY;
-  const openaiKey = process.env.OPENAI_API_KEY;
+  const groqKey = process.env.GROQ_API_KEY?.trim();
+  const openaiKey = process.env.OPENAI_API_KEY?.trim();
 
-  let apiKey = openaiKey || groqKey;
-  let baseUrl = process.env.OPENAI_BASE_URL ?? (groqKey && !openaiKey ? "https://api.groq.com/openai/v1" : "https://api.openai.com/v1");
-  let model = process.env.OPENAI_MODEL ?? (groqKey && !openaiKey ? "llama-3.3-70b-versatile" : "gpt-4o-mini");
+  let apiKey: string | undefined;
+  let baseUrl: string;
+  let model: string;
+
+  if (groqKey && !openaiKey) {
+    apiKey = groqKey;
+    baseUrl = process.env.GROQ_BASE_URL ?? "https://api.groq.com/openai/v1";
+    model = process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile";
+  } else {
+    apiKey = openaiKey;
+    baseUrl = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
+    model = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
+  }
 
   baseUrl = baseUrl.replace(/\/$/, "");
 
