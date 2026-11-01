@@ -31,7 +31,7 @@ export async function streamAssistantReply({
   if (groqKey && !openaiKey) {
     apiKey = groqKey;
     baseUrl = process.env.GROQ_BASE_URL ?? "https://api.groq.com/openai/v1";
-    model = process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile";
+    model = process.env.GROQ_MODEL ?? "openai/gpt-oss-20b";
   } else {
     apiKey = openaiKey;
     baseUrl = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
