@@ -36,8 +36,8 @@ export function TranscriptView({ transcripts }: Props) {
               border: "1px solid var(--border)",
             }}
           >
-            <span className="mr-2 text-xs uppercase tracking-wide" style={{ color: "var(--muted)" }}>
-              {entry.role === "user" ? "You" : "Assistant"}
+            <span className="mr-2 text-xs uppercase tracking-wide font-semibold opacity-75">
+              {entry.role === "user" ? "You:" : "Assistant:"}
             </span>
             {entry.text}
           </p>
