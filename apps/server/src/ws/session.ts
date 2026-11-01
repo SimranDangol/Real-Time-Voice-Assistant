@@ -5,6 +5,8 @@ import { createDeepgramASR, type ASRHandle } from "../providers/asr.deepgram.js"
 import { streamAssistantReply } from "../providers/llm.js";
 import { SentenceChunker } from "../pipeline/chunker.js";
 import { TurnTimer } from "../metrics.js";
+import { createCartesiaTTS, type CartesiaTTSHandle } from "../providers/tts.cartesia.js";
+import { createElevenLabsTTS, type ElevenLabsTTSHandle } from "../providers/tts.elevenlabs.js";
 
 type SessionState = "idle" | "listening" | "thinking" | "speaking";
 
@@ -12,6 +14,13 @@ type SessionState = "idle" | "listening" | "thinking" | "speaking";
 function send(socket: WebSocket, msg: ServerMessage): void {
   if (socket.readyState === socket.OPEN) {
     socket.send(JSON.stringify(msg));
+  }
+}
+
+/** Send a binary audio chunk to the browser. */
+function sendBinary(socket: WebSocket, data: Buffer): void {
+  if (socket.readyState === socket.OPEN) {
+    socket.send(data, { binary: true });
   }
 }
 
@@ -30,6 +39,7 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
   let state: SessionState = "idle";
   let asr: ASRHandle | null = null;
   let llmAbort: AbortController | null = null;
+  let ttsStream: { sendText: (text: string, isLast?: boolean) => void; close: () => void } | null = null;
   let activeTurnId: string | null = null;
 
   const handleFinalTranscript = async (userText: string) => {
@@ -47,8 +57,45 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
 
     // Abort any prior in-flight generation
     llmAbort?.abort();
+    ttsStream?.close();
     const controller = new AbortController();
     llmAbort = controller;
+
+    // Optional server-side streaming TTS (Cartesia or ElevenLabs)
+    const cartesiaKey = process.env.CARTESIA_API_KEY?.trim();
+    const elevenKey = process.env.ELEVENLABS_API_KEY?.trim();
+
+    if (cartesiaKey) {
+      ttsStream = createCartesiaTTS(
+        cartesiaKey,
+        {
+          onAudioChunk(chunk) {
+            timer.markFirstAudio();
+            sendBinary(socket, chunk);
+          },
+          onError(err) {
+            log.warn({ err }, "Cartesia streaming TTS failed, fallback to browser");
+          },
+          onDone() {},
+        },
+        log
+      );
+    } else if (elevenKey) {
+      ttsStream = createElevenLabsTTS(
+        elevenKey,
+        {
+          onAudioChunk(chunk) {
+            timer.markFirstAudio();
+            sendBinary(socket, chunk);
+          },
+          onError(err) {
+            log.warn({ err }, "ElevenLabs streaming TTS failed, fallback to browser");
+          },
+          onDone() {},
+        },
+        log
+      );
+    }
 
     try {
       await streamAssistantReply({
@@ -84,6 +131,7 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
               });
             }
 
+            ttsStream?.sendText(sentence, false);
             send(socket, {
               type: "assistant.sentence",
               turnId,
@@ -119,6 +167,7 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
               });
             }
 
+            ttsStream?.sendText(remaining, true);
             send(socket, {
               type: "assistant.sentence",
               turnId,
@@ -212,6 +261,8 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
         send(socket, { type: "interrupted", turnId: activeTurnId });
       }
       llmAbort?.abort();
+      ttsStream?.close();
+      ttsStream = null;
       asr?.close();
       asr = null;
       state = "idle";
@@ -222,6 +273,8 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
   socket.on("close", (code) => {
     log.info({ code }, "Session disconnected");
     llmAbort?.abort();
+    ttsStream?.close();
+    ttsStream = null;
     asr?.close();
     asr = null;
   });
@@ -229,6 +282,8 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
   socket.on("error", (err) => {
     log.error({ err }, "Socket error");
     llmAbort?.abort();
+    ttsStream?.close();
+    ttsStream = null;
     asr?.close();
     asr = null;
   });
