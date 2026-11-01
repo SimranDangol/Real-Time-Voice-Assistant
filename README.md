@@ -1,59 +1,60 @@
 # Real-Time Voice Assistant
 
-A browser-based voice assistant built for low-latency streaming transcription and conversation flow. The current implementation covers the Week 1 milestone: browser microphone capture, WebSocket transport, streaming ASR integration, and real-time transcript updates in the UI.
-
-## Stack
-
-- Frontend: Next.js + React
-- Backend: Node.js + Express + ws
-- ASR: Deepgram live transcription
-- Dev tooling: TypeScript, pnpm, Docker Compose
+A browser-based voice assistant built for low-latency streaming transcription, reasoning, and voice conversation flow.
 
 ## Architecture
 
-- `apps/web`: browser client with microphone capture and transcript UI
-- `apps/server`: Fastify-style WebSocket session manager, HTTP health endpoint, and Deepgram ASR bridge
-- `docker-compose.yml`: Redis and Postgres services for the broader production stack
+- `apps/web`: Next.js client with `AudioWorklet` microphone capture, sequential sentence playback queue, and latency dashboard.
+- `apps/server`: Node.js + Express WebSocket session manager with streaming Deepgram Nova-3 ASR, Sentence Chunker, and streaming LLM integration.
+- `docker-compose.yml`: Redis and Postgres services for persistence and background worker queue.
 
-## Local development
+## Pipeline Flow
 
-1. Install dependencies
+```
+[User Mic] 
+   ↓ (16kHz PCM-16 over WebSocket)
+[Fastify/Express Server] 
+   ↓ (Binary frame relay)
+[Deepgram Nova-3 ASR] 
+   ↓ (Final transcript)
+[LLM Streaming (Groq / OpenAI)] 
+   ↓ (Token deltas)
+[Sentence Chunker] 
+   ↓ (Sentence 1 emitted immediately)
+[Audio Queue / Web Speech / Streaming TTS] 
+   ↓ (Spoken reply starts before full LLM response finishes)
+[Latency Timer Logs (TTFA ~1s)]
+```
+
+## Local Development
+
+1. **Install dependencies:**
    ```bash
    pnpm install
    ```
 
-2. Copy the environment example and add your keys
+2. **Configure environment variables:**
+   Copy `.env.example` to `.env` and provide your keys:
+   - `DEEPGRAM_API_KEY`: Required for live speech-to-text.
+   - `GROQ_API_KEY` or `OPENAI_API_KEY`: Required for LLM replies. (Groq recommended for ~150-250ms TTFT).
+
+3. **Start the backend:**
    ```bash
-   cp .env.example .env
+   cd apps/server
+   pnpm dev
    ```
 
-3. Start the server and web app in separate terminals
+4. **Start the frontend:**
    ```bash
-   pnpm dev:server
-   pnpm dev:web
+   cd apps/web
+   pnpm dev
    ```
 
-4. Open the app in a browser at `http://localhost:3000`
+5. Open `http://localhost:3000` in Chrome/Edge, click **Start**, and talk to the assistant.
 
-## Environment variables
+## Milestone Status
 
-Required:
-
-- `DEEPGRAM_API_KEY`: API key for Deepgram streaming ASR
-
-Optional:
-
-- `PORT`: server port (default `8080`)
-- `NEXT_PUBLIC_WS_URL`: browser WebSocket URL (default `ws://localhost:8080/ws`)
-
-## Week 1 status
-
-Completed for this milestone:
-
-- microphone capture in the browser
-- audio streaming to the server over WebSocket
-- Deepgram live transcription with partial and final results
-- real-time transcript rendering in the interface
-- server health endpoint and graceful shutdown
-
-Next milestones in the project roadmap are the LLM/voice reply loop, turn management, streaming TTS, and latency metrics.
+- **Week 1 (Complete):** AudioWorklet mic capture, WebSocket transport, Deepgram streaming ASR, live transcription UI.
+- **Week 2 (Complete):** LLM streaming, Sentence Chunker (`apps/server/src/pipeline/chunker.ts`), gapless sequential sentence playback, and per-turn latency metrics (TTFA, TTFT, Sentence 1).
+- **Week 3 (Upcoming):** End-of-turn tuning, barge-in cancellation (`AbortController`), voice tools (weather, reminders), BullMQ post-call jobs.
+- **Week 4 (Upcoming):** Word Error Rate (WER) evaluations, latency benchmark report (p50/p95).
