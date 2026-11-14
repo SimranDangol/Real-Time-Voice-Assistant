@@ -37,6 +37,7 @@ A browser-based voice assistant built for low-latency streaming transcription, r
    Copy `.env.example` to `.env` and provide your keys:
    - `DEEPGRAM_API_KEY`: Required for live speech-to-text.
    - `GROQ_API_KEY` or `OPENAI_API_KEY`: Required for LLM replies. (Groq recommended for ~150-250ms TTFT).
+   - `CARTESIA_API_KEY` or `ELEVENLABS_API_KEY` (optional): enables server-side streaming TTS. Set `TTS_PROVIDER=browser` (or leave keys empty) to use the browser's built-in speech instead — useful while developing without TTS credits.
 
 3. **Start the backend:**
    ```bash
@@ -55,6 +56,6 @@ A browser-based voice assistant built for low-latency streaming transcription, r
 ## Milestone Status
 
 - **Week 1 (Complete):** AudioWorklet mic capture, WebSocket transport, Deepgram streaming ASR, live transcription UI.
-- **Week 2 (Complete):** LLM streaming, Sentence Chunker (`apps/server/src/pipeline/chunker.ts`), gapless sequential sentence playback, and per-turn latency metrics (TTFA, TTFT, Sentence 1).
+- **Week 2 (Complete):** LLM streaming, Sentence Chunker (`apps/server/src/pipeline/chunker.ts`), gapless sentence playback (server TTS via Cartesia/ElevenLabs WebSocket *or* browser `speechSynthesis` fallback), warm per-session TTS connection, per-turn latency metrics (TTFA, LLM first token, sentence 1, total LLM), and playback interruption on barge-in/stop.
 - **Week 3 (Upcoming):** End-of-turn tuning, barge-in cancellation (`AbortController`), voice tools (weather, reminders), BullMQ post-call jobs.
 - **Week 4 (Upcoming):** Word Error Rate (WER) evaluations, latency benchmark report (p50/p95).
