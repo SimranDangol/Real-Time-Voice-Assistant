@@ -23,6 +23,7 @@ type ServerMessage =
       sentenceIndex: number;
       text: string;
       isLast: boolean;
+      audio: "pcm" | "browser";
     }
   | {
       type: "metrics";
@@ -30,6 +31,7 @@ type ServerMessage =
       ttfaMs: number | null;
       llmFirstTokenMs: number | null;
       sentence1Ms: number | null;
+      totalLlmMs?: number | null;
     }
   | { type: "interrupted"; turnId: string }
   | { type: "error"; code: string; retryable: boolean };
@@ -52,6 +54,13 @@ export function useMic() {
   const isPlayingRef = useRef<boolean>(false);
   const nextPlayTimeRef = useRef<number>(0);
 
+  // Server-TTS (PCM) playback: track live sources so barge-in can stop them
+  const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  // Turn id for which we already cancelled speechSynthesis (pcm mode)
+  const speechCancelledTurnRef = useRef<string | null>(null);
+  // Drop stale PCM chunks that arrive after an interrupt, until the next turn
+  const pcmMutedRef = useRef<boolean>(false);
+
   const playPcm16Chunk = useCallback(async (data: ArrayBuffer | Blob) => {
     const ctx = contextRef.current;
     if (!ctx) return;
@@ -68,12 +77,28 @@ export function useMic() {
     audioBuffer.getChannelData(0).set(float32);
 
     const source = ctx.createBufferSource();
+    activeSourcesRef.current.add(source);
+    source.onended = () => {
+      activeSourcesRef.current.delete(source);
+    };
     source.buffer = audioBuffer;
     source.connect(ctx.destination);
 
     const startTime = Math.max(ctx.currentTime, nextPlayTimeRef.current);
     source.start(startTime);
     nextPlayTimeRef.current = startTime + audioBuffer.duration;
+  }, []);
+
+  const stopAllPcm = useCallback(() => {
+    for (const source of activeSourcesRef.current) {
+      try {
+        source.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
+    activeSourcesRef.current.clear();
+    nextPlayTimeRef.current = 0;
   }, []);
 
   const playNextSentence = useCallback(() => {
@@ -179,9 +204,20 @@ export function useMic() {
         });
       }
 
-      // Early sentence streaming for gapless speech
+      // Early sentence streaming: server-TTS turns arrive as binary PCM and
+      // must NOT also be spoken via speechSynthesis (would double the voice).
       if (msg.type === "assistant.sentence") {
-        queueSentence(msg.text);
+        pcmMutedRef.current = false; // new turn — its audio may play
+        if (msg.audio === "pcm") {
+          if (speechCancelledTurnRef.current !== msg.turnId) {
+            speechCancelledTurnRef.current = msg.turnId;
+            speechQueueRef.current = [];
+            isPlayingRef.current = false;
+            window.speechSynthesis.cancel();
+          }
+        } else {
+          queueSentence(msg.text);
+        }
       }
 
       // Latency metrics
@@ -194,19 +230,22 @@ export function useMic() {
         });
       }
 
-      // Barge-in interruption: cancel speech immediately
+      // Barge-in interruption: cancel ALL playback immediately
       if (msg.type === "interrupted") {
         speechQueueRef.current = [];
         isPlayingRef.current = false;
         nextPlayTimeRef.current = 0;
         window.speechSynthesis.cancel();
+        stopAllPcm();
+        speechCancelledTurnRef.current = null;
+        pcmMutedRef.current = true;
       }
 
       if (msg.type === "error") {
         setError(`Server error: ${msg.code}`);
       }
     },
-    [queueSentence]
+    [queueSentence, stopAllPcm]
   );
 
   // ── Start listening ──────────────────────────────────────────────────────────
@@ -261,6 +300,13 @@ export function useMic() {
       if (typeof e.data === "string") {
         handleMessage(e.data);
       } else if (e.data instanceof ArrayBuffer || e.data instanceof Blob) {
+        if (pcmMutedRef.current) return; // stale audio from an interrupted turn
+        // Server TTS audio: ensure browser speech isn't also talking
+        if (isPlayingRef.current || speechQueueRef.current.length > 0) {
+          speechQueueRef.current = [];
+          isPlayingRef.current = false;
+          window.speechSynthesis.cancel();
+        }
         void playPcm16Chunk(e.data);
       }
     };
@@ -296,6 +342,9 @@ export function useMic() {
     isPlayingRef.current = false;
     nextPlayTimeRef.current = 0;
     window.speechSynthesis.cancel();
+    stopAllPcm();
+    speechCancelledTurnRef.current = null;
+    pcmMutedRef.current = false;
     setIsListening(false);
   }
 

@@ -5,6 +5,8 @@ export interface CartesiaTTSCallbacks {
   onAudioChunk: (chunk: Buffer) => void;
   onError: (err: Error) => void;
   onDone: () => void;
+  /** Fired when the provider socket closes unexpectedly (not via close()). */
+  onDisconnect?: () => void;
 }
 
 export interface CartesiaTTSHandle {
@@ -64,6 +66,7 @@ export function createCartesiaTTS(
     log.info("Cartesia TTS closed");
     if (!isClosed) {
       callbacks.onDone();
+      callbacks.onDisconnect?.();
     }
   });
 
@@ -106,3 +109,4 @@ export function createCartesiaTTS(
     },
   };
 }
+

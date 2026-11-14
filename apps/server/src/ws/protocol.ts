@@ -43,6 +43,8 @@ export type ServerMessage =
       sentenceIndex: number;
       text: string;
       isLast: boolean;
+      /** "pcm" = server TTS audio arrives as binary frames; "browser" = use speechSynthesis. */
+      audio: "pcm" | "browser";
     }
   | {
       type: "metrics";

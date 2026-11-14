@@ -39,63 +39,81 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
   let state: SessionState = "idle";
   let asr: ASRHandle | null = null;
   let llmAbort: AbortController | null = null;
-  let ttsStream: { sendText: (text: string, isLast?: boolean) => void; close: () => void } | null = null;
   let activeTurnId: string | null = null;
+  let currentTurn: { turnId: string; timer: TurnTimer } | null = null;
+
+  interface TtsHandle {
+    sendText: (text: string, isLast?: boolean) => void;
+    close: () => void;
+  }
+
+  const ttsCallbacks = {
+    onAudioChunk(chunk: Buffer) {
+      currentTurn?.timer.markFirstAudio();
+      sendBinary(socket, chunk);
+    },
+    onError(err: Error) {
+      log.warn({ err }, "Streaming TTS failed — falling back to browser speech");
+      ttsStream = null;
+    },
+    onDone() {},
+    onDisconnect() {
+      ttsStream = null;
+    },
+  };
+
+  // Lazily create ONE streaming-TTS connection per session and keep it warm
+  // across turns. Returns null when TTS_PROVIDER=browser or no keys are set —
+  // the client then falls back to speechSynthesis.
+  let ttsStream: TtsHandle | null = null;
+  const ensureTts = (): TtsHandle | null => {
+    if (ttsStream) return ttsStream;
+
+    const provider = (process.env.TTS_PROVIDER ?? "auto").trim().toLowerCase();
+    const cartesiaKey = process.env.CARTESIA_API_KEY?.trim();
+    const elevenKey = process.env.ELEVENLABS_API_KEY?.trim();
+
+    if (provider !== "browser" && provider !== "elevenlabs" && cartesiaKey) {
+      ttsStream = createCartesiaTTS(cartesiaKey, ttsCallbacks, log);
+    } else if (provider !== "browser" && provider !== "cartesia" && elevenKey) {
+      ttsStream = createElevenLabsTTS(elevenKey, ttsCallbacks, log);
+    }
+    return ttsStream;
+  };
+
+  const closeTts = () => {
+    ttsStream?.close();
+    ttsStream = null;
+  };
 
   const handleFinalTranscript = async (userText: string) => {
     if (!userText.trim()) return;
+
+    // Barge-in: a new utterance while a turn is in flight interrupts it —
+    // tell the client to flush playback before starting the new turn.
+    const wasActive = activeTurnId !== null && (state === "thinking" || state === "speaking");
+    if (wasActive && activeTurnId) {
+      send(socket, { type: "interrupted", turnId: activeTurnId });
+      closeTts();
+    }
 
     const turnId = `t-${Date.now().toString(36)}`;
     activeTurnId = turnId;
     state = "thinking";
 
     const timer = new TurnTimer(turnId);
+    currentTurn = { turnId, timer };
     const chunker = new SentenceChunker();
     let sentenceIndex = 0;
 
     log.info({ turnId, userText }, "Generating assistant reply");
 
-    // Abort any prior in-flight generation
     llmAbort?.abort();
-    ttsStream?.close();
     const controller = new AbortController();
     llmAbort = controller;
 
-    // Optional server-side streaming TTS (Cartesia or ElevenLabs)
-    const cartesiaKey = process.env.CARTESIA_API_KEY?.trim();
-    const elevenKey = process.env.ELEVENLABS_API_KEY?.trim();
-
-    if (cartesiaKey) {
-      ttsStream = createCartesiaTTS(
-        cartesiaKey,
-        {
-          onAudioChunk(chunk) {
-            timer.markFirstAudio();
-            sendBinary(socket, chunk);
-          },
-          onError(err) {
-            log.warn({ err }, "Cartesia streaming TTS failed, fallback to browser");
-          },
-          onDone() {},
-        },
-        log
-      );
-    } else if (elevenKey) {
-      ttsStream = createElevenLabsTTS(
-        elevenKey,
-        {
-          onAudioChunk(chunk) {
-            timer.markFirstAudio();
-            sendBinary(socket, chunk);
-          },
-          onError(err) {
-            log.warn({ err }, "ElevenLabs streaming TTS failed, fallback to browser");
-          },
-          onDone() {},
-        },
-        log
-      );
-    }
+    // Warm the TTS connection during LLM time-to-first-token.
+    ensureTts();
 
     try {
       await streamAssistantReply({
@@ -116,7 +134,9 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
           for (const sentence of sentences) {
             if (sentenceIndex === 0) {
               timer.markSentence1();
-              timer.markFirstAudio();
+              // Browser speechSynthesis starts on receipt; server TTS marks
+              // first audio when the first PCM chunk actually arrives.
+              if (!ttsStream) timer.markFirstAudio();
               state = "speaking";
 
               // Emit early latency metrics (TTFA)
@@ -138,6 +158,7 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
               sentenceIndex: sentenceIndex++,
               text: sentence,
               isLast: false,
+              audio: ttsStream ? "pcm" : "browser",
             });
           }
         },
@@ -156,7 +177,7 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
           if (remaining) {
             if (sentenceIndex === 0) {
               timer.markSentence1();
-              timer.markFirstAudio();
+              if (!ttsStream) timer.markFirstAudio();
               const metrics = timer.getMetrics();
               send(socket, {
                 type: "metrics",
@@ -174,12 +195,25 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
               sentenceIndex: sentenceIndex++,
               text: remaining,
               isLast: true,
+              audio: ttsStream ? "pcm" : "browser",
             });
           }
 
           send(socket, { type: "assistant.final", text: fullText });
+
+          // Final per-turn metrics, now including total LLM time
+          const finalMetrics = timer.getMetrics();
+          send(socket, {
+            type: "metrics",
+            turnId,
+            ttfaMs: finalMetrics.ttfaMs,
+            llmFirstTokenMs: finalMetrics.llmFirstTokenMs,
+            sentence1Ms: finalMetrics.sentence1Ms,
+            totalLlmMs: finalMetrics.totalLlmMs,
+          });
+
           state = "listening";
-          log.info({ turnId, metrics: timer.getMetrics() }, "Turn complete");
+          log.info({ turnId, metrics: finalMetrics }, "Turn complete");
         },
 
         onError(err) {
@@ -261,11 +295,11 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
         send(socket, { type: "interrupted", turnId: activeTurnId });
       }
       llmAbort?.abort();
-      ttsStream?.close();
-      ttsStream = null;
+      closeTts();
       asr?.close();
       asr = null;
       state = "idle";
+      currentTurn = null;
     }
   });
 
@@ -273,18 +307,18 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
   socket.on("close", (code) => {
     log.info({ code }, "Session disconnected");
     llmAbort?.abort();
-    ttsStream?.close();
-    ttsStream = null;
+    closeTts();
     asr?.close();
     asr = null;
+    currentTurn = null;
   });
 
   socket.on("error", (err) => {
     log.error({ err }, "Socket error");
     llmAbort?.abort();
-    ttsStream?.close();
-    ttsStream = null;
+    closeTts();
     asr?.close();
     asr = null;
+    currentTurn = null;
   });
 }

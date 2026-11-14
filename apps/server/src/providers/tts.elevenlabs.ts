@@ -5,6 +5,8 @@ export interface ElevenLabsTTSCallbacks {
   onAudioChunk: (chunk: Buffer) => void;
   onError: (err: Error) => void;
   onDone: () => void;
+  /** Fired when the provider socket closes unexpectedly (not via close()). */
+  onDisconnect?: () => void;
 }
 
 export interface ElevenLabsTTSHandle {
@@ -73,6 +75,7 @@ export function createElevenLabsTTS(
     log.info("ElevenLabs TTS closed");
     if (!isClosed) {
       callbacks.onDone();
+      callbacks.onDisconnect?.();
     }
   });
 
@@ -111,3 +114,4 @@ export function createElevenLabsTTS(
     },
   };
 }
+
