@@ -35,7 +35,24 @@ export function parseClientMessage(
 export type ServerMessage =
   | { type: "transcript.partial"; text: string }
   | { type: "transcript.final"; text: string }
-  | { type: "error"; code: string; retryable: boolean }
-  | { type: "metrics"; turnId: string; ttfaMs: number }
-  | { type: "interrupted"; turnId: string };
-
+  | { type: "assistant.partial"; text: string }
+  | { type: "assistant.final"; text: string }
+  | {
+      type: "assistant.sentence";
+      turnId: string;
+      sentenceIndex: number;
+      text: string;
+      isLast: boolean;
+      /** "pcm" = server TTS audio arrives as binary frames; "browser" = use speechSynthesis. */
+      audio: "pcm" | "browser";
+    }
+  | {
+      type: "metrics";
+      turnId: string;
+      ttfaMs: number | null;
+      llmFirstTokenMs: number | null;
+      sentence1Ms: number | null;
+      totalLlmMs?: number | null;
+    }
+  | { type: "interrupted"; turnId: string }
+  | { type: "error"; code: string; retryable: boolean };

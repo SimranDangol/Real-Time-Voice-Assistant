@@ -3,73 +3,250 @@
 import { useCallback, useRef, useState } from "react";
 import type { TranscriptEntry } from "@/components/TranscriptView";
 
-const WS_URL =
-  process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080/ws";
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080/ws";
+
+export interface LatencyMetrics {
+  turnId: string;
+  ttfaMs: number | null;
+  llmFirstTokenMs: number | null;
+  sentence1Ms: number | null;
+}
 
 type ServerMessage =
   | { type: "transcript.partial"; text: string }
   | { type: "transcript.final"; text: string }
-  | { type: "error"; code: string; retryable: boolean }
-  | { type: string };
+  | { type: "assistant.partial"; text: string }
+  | { type: "assistant.final"; text: string }
+  | {
+      type: "assistant.sentence";
+      turnId: string;
+      sentenceIndex: number;
+      text: string;
+      isLast: boolean;
+      audio: "pcm" | "browser";
+    }
+  | {
+      type: "metrics";
+      turnId: string;
+      ttfaMs: number | null;
+      llmFirstTokenMs: number | null;
+      sentence1Ms: number | null;
+      totalLlmMs?: number | null;
+    }
+  | { type: "interrupted"; turnId: string }
+  | { type: "error"; code: string; retryable: boolean };
 
 export function useMic() {
   const [isListening, setIsListening] = useState(false);
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
+  const [metrics, setMetrics] = useState<LatencyMetrics | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const workletRef = useRef<AudioWorkletNode | null>(null);
-  // ID of the current partial transcript entry so we can update it in place
-  const partialIdRef = useRef<string | null>(null);
+  const userPartialIdRef = useRef<string | null>(null);
+  const assistantPartialIdRef = useRef<string | null>(null);
 
-  // ── Handle a message from the server ────────────────────────────────────────
-  const handleMessage = useCallback((raw: string) => {
-    let msg: ServerMessage;
-    try {
-      msg = JSON.parse(raw) as ServerMessage;
-    } catch {
+  // Audio queue for sequential sentence playback
+  const speechQueueRef = useRef<string[]>([]);
+  const isPlayingRef = useRef<boolean>(false);
+  const nextPlayTimeRef = useRef<number>(0);
+
+  // Server-TTS (PCM) playback: track live sources so barge-in can stop them
+  const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  // Turn id for which we already cancelled speechSynthesis (pcm mode)
+  const speechCancelledTurnRef = useRef<string | null>(null);
+  // Drop stale PCM chunks that arrive after an interrupt, until the next turn
+  const pcmMutedRef = useRef<boolean>(false);
+
+  const playPcm16Chunk = useCallback(async (data: ArrayBuffer | Blob) => {
+    const ctx = contextRef.current;
+    if (!ctx) return;
+
+    const arrayBuffer = data instanceof Blob ? await data.arrayBuffer() : data;
+    const int16 = new Int16Array(arrayBuffer);
+    const float32 = new Float32Array(int16.length);
+
+    for (let i = 0; i < int16.length; i++) {
+      float32[i] = int16[i] / 32768.0;
+    }
+
+    const audioBuffer = ctx.createBuffer(1, float32.length, 16000);
+    audioBuffer.getChannelData(0).set(float32);
+
+    const source = ctx.createBufferSource();
+    activeSourcesRef.current.add(source);
+    source.onended = () => {
+      activeSourcesRef.current.delete(source);
+    };
+    source.buffer = audioBuffer;
+    source.connect(ctx.destination);
+
+    const startTime = Math.max(ctx.currentTime, nextPlayTimeRef.current);
+    source.start(startTime);
+    nextPlayTimeRef.current = startTime + audioBuffer.duration;
+  }, []);
+
+  const stopAllPcm = useCallback(() => {
+    for (const source of activeSourcesRef.current) {
+      try {
+        source.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
+    activeSourcesRef.current.clear();
+    nextPlayTimeRef.current = 0;
+  }, []);
+
+  const playNextSentence = useCallback(() => {
+    if (speechQueueRef.current.length === 0) {
+      isPlayingRef.current = false;
       return;
     }
 
-    if (msg.type === "transcript.partial") {
-      const text = (msg as { type: string; text: string }).text;
-      // Reuse the same ID so the partial updates in place
-      const id = partialIdRef.current ?? crypto.randomUUID();
-      partialIdRef.current = id;
-      setTranscripts((prev) => {
-        const idx = prev.findIndex((e) => e.id === id);
-        if (idx >= 0) {
-          const next = [...prev];
-          next[idx] = { id, text, isFinal: false };
-          return next;
-        }
-        return [...prev, { id, text, isFinal: false }];
-      });
-    }
+    isPlayingRef.current = true;
+    const nextText = speechQueueRef.current.shift()!;
+    const utterance = new SpeechSynthesisUtterance(nextText);
+    utterance.rate = 1.05;
+    utterance.pitch = 1.0;
 
-    if (msg.type === "transcript.final") {
-      const text = (msg as { type: string; text: string }).text;
-      const id = partialIdRef.current ?? crypto.randomUUID();
-      // Clear partial slot so the next utterance gets a fresh entry
-      partialIdRef.current = null;
-      setTranscripts((prev) => {
-        const idx = prev.findIndex((e) => e.id === id);
-        if (idx >= 0) {
-          const next = [...prev];
-          next[idx] = { id, text, isFinal: true };
-          return next;
-        }
-        return [...prev, { id, text, isFinal: true }];
-      });
-    }
+    utterance.onend = () => {
+      playNextSentence();
+    };
 
-    if (msg.type === "error") {
-      const { code } = msg as { type: string; code: string };
-      setError(`Server error: ${code}`);
-    }
+    utterance.onerror = () => {
+      playNextSentence();
+    };
+
+    window.speechSynthesis.speak(utterance);
   }, []);
+
+  const queueSentence = useCallback(
+    (text: string) => {
+      if (!text.trim()) return;
+      speechQueueRef.current.push(text);
+      if (!isPlayingRef.current) {
+        playNextSentence();
+      }
+    },
+    [playNextSentence]
+  );
+
+  const handleMessage = useCallback(
+    (raw: string) => {
+      let msg: ServerMessage;
+      try {
+        msg = JSON.parse(raw) as ServerMessage;
+      } catch {
+        return;
+      }
+
+      if (msg.type === "transcript.partial") {
+        const text = msg.text;
+        const id = userPartialIdRef.current ?? crypto.randomUUID();
+        userPartialIdRef.current = id;
+        setTranscripts((prev) => {
+          const idx = prev.findIndex((e) => e.id === id && e.role === "user");
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = { id, role: "user", text, isFinal: false };
+            return next;
+          }
+          return [...prev, { id, role: "user", text, isFinal: false }];
+        });
+      }
+
+      if (msg.type === "transcript.final") {
+        const text = msg.text;
+        const id = userPartialIdRef.current ?? crypto.randomUUID();
+        userPartialIdRef.current = null;
+        setTranscripts((prev) => {
+          const idx = prev.findIndex((e) => e.id === id && e.role === "user");
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = { id, role: "user", text, isFinal: true };
+            return next;
+          }
+          return [...prev, { id, role: "user", text, isFinal: true }];
+        });
+      }
+
+      if (msg.type === "assistant.partial") {
+        const text = msg.text;
+        const id = assistantPartialIdRef.current ?? crypto.randomUUID();
+        assistantPartialIdRef.current = id;
+        setTranscripts((prev) => {
+          const idx = prev.findIndex((e) => e.id === id && e.role === "assistant");
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = { id, role: "assistant", text, isFinal: false };
+            return next;
+          }
+          return [...prev, { id, role: "assistant", text, isFinal: false }];
+        });
+      }
+
+      if (msg.type === "assistant.final") {
+        const text = msg.text;
+        const id = assistantPartialIdRef.current ?? crypto.randomUUID();
+        assistantPartialIdRef.current = null;
+        setTranscripts((prev) => {
+          const idx = prev.findIndex((e) => e.id === id && e.role === "assistant");
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = { id, role: "assistant", text, isFinal: true };
+            return next;
+          }
+          return [...prev, { id, role: "assistant", text, isFinal: true }];
+        });
+      }
+
+      // Early sentence streaming: server-TTS turns arrive as binary PCM and
+      // must NOT also be spoken via speechSynthesis (would double the voice).
+      if (msg.type === "assistant.sentence") {
+        pcmMutedRef.current = false; // new turn — its audio may play
+        if (msg.audio === "pcm") {
+          if (speechCancelledTurnRef.current !== msg.turnId) {
+            speechCancelledTurnRef.current = msg.turnId;
+            speechQueueRef.current = [];
+            isPlayingRef.current = false;
+            window.speechSynthesis.cancel();
+          }
+        } else {
+          queueSentence(msg.text);
+        }
+      }
+
+      // Latency metrics
+      if (msg.type === "metrics") {
+        setMetrics({
+          turnId: msg.turnId,
+          ttfaMs: msg.ttfaMs,
+          llmFirstTokenMs: msg.llmFirstTokenMs,
+          sentence1Ms: msg.sentence1Ms,
+        });
+      }
+
+      // Barge-in interruption: cancel ALL playback immediately
+      if (msg.type === "interrupted") {
+        speechQueueRef.current = [];
+        isPlayingRef.current = false;
+        nextPlayTimeRef.current = 0;
+        window.speechSynthesis.cancel();
+        stopAllPcm();
+        speechCancelledTurnRef.current = null;
+        pcmMutedRef.current = true;
+      }
+
+      if (msg.type === "error") {
+        setError(`Server error: ${msg.code}`);
+      }
+    },
+    [queueSentence, stopAllPcm]
+  );
 
   // ── Start listening ──────────────────────────────────────────────────────────
   const start = useCallback(async () => {
@@ -92,10 +269,8 @@ export function useMic() {
     wsRef.current = ws;
 
     ws.onopen = async () => {
-      // Tell server to start a new session
       ws.send(JSON.stringify({ type: "start", sessionId: crypto.randomUUID() }));
 
-      // 3. Set up AudioContext at 16 kHz (Chrome honours this)
       const ctx = new AudioContext({ sampleRate: 16000 });
       contextRef.current = ctx;
 
@@ -107,25 +282,33 @@ export function useMic() {
         return;
       }
 
-      // 4. Connect mic → worklet → (silent destination to keep graph alive)
       const source = ctx.createMediaStreamSource(stream);
       const worklet = new AudioWorkletNode(ctx, "audio-processor");
       workletRef.current = worklet;
 
-      // 5. Forward PCM frames from worklet to server over WebSocket
       worklet.port.onmessage = (e: MessageEvent<{ pcm16: ArrayBuffer }>) => {
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(e.data.pcm16); // send as binary frame
+          ws.send(e.data.pcm16);
         }
       };
 
       source.connect(worklet);
-      // Do NOT connect worklet to ctx.destination — we don't want to hear ourselves
       setIsListening(true);
     };
 
     ws.onmessage = (e: MessageEvent) => {
-      if (typeof e.data === "string") handleMessage(e.data);
+      if (typeof e.data === "string") {
+        handleMessage(e.data);
+      } else if (e.data instanceof ArrayBuffer || e.data instanceof Blob) {
+        if (pcmMutedRef.current) return; // stale audio from an interrupted turn
+        // Server TTS audio: ensure browser speech isn't also talking
+        if (isPlayingRef.current || speechQueueRef.current.length > 0) {
+          speechQueueRef.current = [];
+          isPlayingRef.current = false;
+          window.speechSynthesis.cancel();
+        }
+        void playPcm16Chunk(e.data);
+      }
     };
 
     ws.onerror = () => {
@@ -153,9 +336,17 @@ export function useMic() {
     contextRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    userPartialIdRef.current = null;
+    assistantPartialIdRef.current = null;
+    speechQueueRef.current = [];
+    isPlayingRef.current = false;
+    nextPlayTimeRef.current = 0;
+    window.speechSynthesis.cancel();
+    stopAllPcm();
+    speechCancelledTurnRef.current = null;
+    pcmMutedRef.current = false;
     setIsListening(false);
   }
 
-  return { isListening, transcripts, error, start, stop };
+  return { isListening, transcripts, metrics, error, start, stop };
 }
-

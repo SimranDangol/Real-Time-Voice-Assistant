@@ -1,5 +1,6 @@
 export interface TranscriptEntry {
   id: string;
+  role: "user" | "assistant";
   text: string;
   isFinal: boolean;
 }
@@ -18,18 +19,29 @@ export function TranscriptView({ transcripts }: Props) {
   }
 
   return (
-    <div className="w-full max-w-2xl space-y-2">
+    <div className="w-full max-w-2xl space-y-3">
       {transcripts.map((entry) => (
-        <p
+        <div
           key={entry.id}
-          className="text-lg leading-relaxed transition-all duration-150"
-          style={{
-            color: entry.isFinal ? "var(--text)" : "var(--muted)",
-            fontStyle: entry.isFinal ? "normal" : "italic",
-          }}
+          className="flex"
+          style={{ justifyContent: entry.role === "user" ? "flex-end" : "flex-start" }}
         >
-          {entry.text}
-        </p>
+          <p
+            className="max-w-xl rounded-xl px-3 py-2 text-lg leading-relaxed transition-all duration-150"
+            style={{
+              color: entry.isFinal ? "var(--text)" : "var(--muted)",
+              fontStyle: entry.isFinal ? "normal" : "italic",
+              background:
+                entry.role === "user" ? "rgba(59, 130, 246, 0.12)" : "rgba(34, 197, 94, 0.12)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            <span className="mr-2 text-xs uppercase tracking-wide font-semibold opacity-75">
+              {entry.role === "user" ? "You:" : "Assistant:"}
+            </span>
+            {entry.text}
+          </p>
+        </div>
       ))}
     </div>
   );
