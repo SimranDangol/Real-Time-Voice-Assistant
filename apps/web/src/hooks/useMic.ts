@@ -10,7 +10,10 @@ export interface LatencyMetrics {
   ttfaMs: number | null;
   llmFirstTokenMs: number | null;
   sentence1Ms: number | null;
+  totalLlmMs?: number | null;
 }
+
+export type AssistantState = "idle" | "listening" | "thinking" | "speaking";
 
 type ServerMessage =
   | { type: "transcript.partial"; text: string }
@@ -26,6 +29,13 @@ type ServerMessage =
       audio: "pcm" | "browser";
     }
   | {
+      type: "assistant.tool";
+      turnId: string;
+      tool: string;
+      args: Record<string, any>;
+      result: string;
+    }
+  | {
       type: "metrics";
       turnId: string;
       ttfaMs: number | null;
@@ -33,11 +43,15 @@ type ServerMessage =
       sentence1Ms: number | null;
       totalLlmMs?: number | null;
     }
+  | { type: "audio.turn"; turnId: string }
   | { type: "interrupted"; turnId: string }
-  | { type: "error"; code: string; retryable: boolean };
+  | { type: "state"; state: AssistantState }
+  | { type: "pong" }
+  | { type: "error"; code: string; retryable: boolean; message?: string };
 
 export function useMic() {
   const [isListening, setIsListening] = useState(false);
+  const [assistantState, setAssistantState] = useState<AssistantState>("idle");
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [metrics, setMetrics] = useState<LatencyMetrics | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +72,9 @@ export function useMic() {
   const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   // Turn id for which we already cancelled speechSynthesis (pcm mode)
   const speechCancelledTurnRef = useRef<string | null>(null);
+  // Turn id of the PCM stream currently announced by the server (audio.turn).
+  // Binary chunks that arrive while muted or for a superseded turn are dropped.
+  const pcmTurnIdRef = useRef<string | null>(null);
   // Drop stale PCM chunks that arrive after an interrupt, until the next turn
   const pcmMutedRef = useRef<boolean>(false);
 
@@ -144,6 +161,10 @@ export function useMic() {
         return;
       }
 
+      if (msg.type === "state") {
+        setAssistantState(msg.state);
+      }
+
       if (msg.type === "transcript.partial") {
         const text = msg.text;
         const id = userPartialIdRef.current ?? crypto.randomUUID();
@@ -172,6 +193,20 @@ export function useMic() {
           }
           return [...prev, { id, role: "user", text, isFinal: true }];
         });
+      }
+
+      if (msg.type === "assistant.tool") {
+        const toolMsg = msg;
+        setTranscripts((prev) => [
+          ...prev,
+          {
+            id: `tool-${Date.now()}`,
+            role: "tool",
+            text: toolMsg.result,
+            isFinal: true,
+            toolCall: { name: toolMsg.tool, args: toolMsg.args, result: toolMsg.result },
+          },
+        ]);
       }
 
       if (msg.type === "assistant.partial") {
@@ -204,10 +239,9 @@ export function useMic() {
         });
       }
 
-      // Early sentence streaming: server-TTS turns arrive as binary PCM and
-      // must NOT also be spoken via speechSynthesis (would double the voice).
+      // Early sentence streaming
       if (msg.type === "assistant.sentence") {
-        pcmMutedRef.current = false; // new turn — its audio may play
+        pcmMutedRef.current = false;
         if (msg.audio === "pcm") {
           if (speechCancelledTurnRef.current !== msg.turnId) {
             speechCancelledTurnRef.current = msg.turnId;
@@ -227,10 +261,18 @@ export function useMic() {
           ttfaMs: msg.ttfaMs,
           llmFirstTokenMs: msg.llmFirstTokenMs,
           sentence1Ms: msg.sentence1Ms,
+          totalLlmMs: msg.totalLlmMs,
         });
       }
 
-      // Barge-in interruption: cancel ALL playback immediately
+      // Server announces which turn the following binary PCM chunks belong to.
+      // A new turn id means barge-in is over and playback may resume.
+      if (msg.type === "audio.turn") {
+        pcmTurnIdRef.current = msg.turnId;
+        pcmMutedRef.current = false;
+      }
+
+      // Barge-in interruption: cancel ALL playback immediately & mark transcript
       if (msg.type === "interrupted") {
         speechQueueRef.current = [];
         isPlayingRef.current = false;
@@ -239,10 +281,19 @@ export function useMic() {
         stopAllPcm();
         speechCancelledTurnRef.current = null;
         pcmMutedRef.current = true;
+
+        setTranscripts((prev) => {
+          const copy = [...prev];
+          const lastAssistant = [...copy].reverse().find((e) => e.role === "assistant");
+          if (lastAssistant) {
+            lastAssistant.interrupted = true;
+          }
+          return copy;
+        });
       }
 
       if (msg.type === "error") {
-        setError(`Server error: ${msg.code}`);
+        setError(msg.message ? `Error: ${msg.message}` : `Server error: ${msg.code}`);
       }
     },
     [queueSentence, stopAllPcm]
@@ -264,8 +315,23 @@ export function useMic() {
     }
     streamRef.current = stream;
 
-    // 2. Open WebSocket
-    const ws = new WebSocket(WS_URL);
+    // 2. Fetch short-lived JWT auth token
+    const serverBase = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
+    let tokenParam = "";
+    try {
+      const res = await fetch(`${serverBase}/api/auth/token`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.token) {
+          tokenParam = `?token=${encodeURIComponent(data.token)}`;
+        }
+      }
+    } catch {
+      // Dev mode fallback
+    }
+
+    // 3. Open WebSocket with token
+    const ws = new WebSocket(`${WS_URL}${tokenParam}`);
     wsRef.current = ws;
 
     ws.onopen = async () => {
@@ -300,8 +366,9 @@ export function useMic() {
       if (typeof e.data === "string") {
         handleMessage(e.data);
       } else if (e.data instanceof ArrayBuffer || e.data instanceof Blob) {
-        if (pcmMutedRef.current) return; // stale audio from an interrupted turn
-        // Server TTS audio: ensure browser speech isn't also talking
+        // Drop chunks muted by barge-in; they belong to the interrupted turn
+        // until the server announces a new one via audio.turn.
+        if (pcmMutedRef.current) return;
         if (isPlayingRef.current || speechQueueRef.current.length > 0) {
           speechQueueRef.current = [];
           isPlayingRef.current = false;
@@ -318,8 +385,9 @@ export function useMic() {
 
     ws.onclose = () => {
       setIsListening(false);
+      setAssistantState("idle");
     };
-  }, [handleMessage]);
+  }, [handleMessage, playPcm16Chunk]);
 
   // ── Stop listening ───────────────────────────────────────────────────────────
   const stop = useCallback(() => {
@@ -345,8 +413,10 @@ export function useMic() {
     stopAllPcm();
     speechCancelledTurnRef.current = null;
     pcmMutedRef.current = false;
+    pcmTurnIdRef.current = null;
     setIsListening(false);
+    setAssistantState("idle");
   }
 
-  return { isListening, transcripts, metrics, error, start, stop };
+  return { isListening, assistantState, transcripts, metrics, error, start, stop };
 }
