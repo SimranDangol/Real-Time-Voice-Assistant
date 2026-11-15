@@ -4,7 +4,7 @@ import { useMic } from "@/hooks/useMic";
 import { TranscriptView } from "@/components/TranscriptView";
 
 export default function Home() {
-  const { isListening, transcripts, metrics, error, start, stop } = useMic();
+  const { isListening, assistantState, transcripts, metrics, error, start, stop } = useMic();
 
   return (
     <main
@@ -17,14 +17,14 @@ export default function Home() {
           🎙️ Voice Assistant
         </h1>
         <p className="text-sm" style={{ color: "var(--muted)" }}>
-          Low-latency streaming pipeline — Week 2
+          Real-Time Barge-In &bull; Voice Tools &bull; Session Queue &bull; Low Latency
         </p>
       </div>
 
       {/* Latency Dashboard */}
       {metrics && (
         <div
-          className="flex items-center gap-6 px-5 py-2.5 rounded-full text-xs font-mono"
+          className="flex flex-wrap items-center justify-center gap-4 px-5 py-2.5 rounded-full text-xs font-mono"
           style={{
             background: "rgba(255, 255, 255, 0.04)",
             border: "1px solid var(--border)",
@@ -49,6 +49,14 @@ export default function Home() {
               {metrics.sentence1Ms ? `${metrics.sentence1Ms}ms` : "—"}
             </span>
           </div>
+          {metrics.totalLlmMs && (
+            <div>
+              Total LLM:{" "}
+              <span style={{ color: "#a855f7", fontWeight: 600 }}>
+                {`${metrics.totalLlmMs}ms`}
+              </span>
+            </div>
+          )}
         </div>
       )}
 
@@ -77,19 +85,27 @@ export default function Home() {
         {isListening ? "Stop" : "Start"}
       </button>
 
-      {/* Status indicator */}
+      {/* State Machine Status indicator */}
       {isListening && (
-        <div className="flex items-center gap-2 text-sm" style={{ color: "var(--success)" }}>
-          <span
-            style={{
-              display: "inline-block",
-              width: "8px",
-              height: "8px",
-              borderRadius: "50%",
-              backgroundColor: "var(--success)",
-            }}
-          />
-          Listening — speak now
+        <div className="flex items-center gap-2 text-sm font-medium">
+          {assistantState === "listening" && (
+            <span className="flex items-center gap-2" style={{ color: "var(--success)" }}>
+              <span className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse" />
+              Listening — speak now (you can interrupt anytime)
+            </span>
+          )}
+          {assistantState === "thinking" && (
+            <span className="flex items-center gap-2" style={{ color: "var(--accent)" }}>
+              <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
+              Thinking & reasoning (tools enabled)...
+            </span>
+          )}
+          {assistantState === "speaking" && (
+            <span className="flex items-center gap-2" style={{ color: "#a855f7" }}>
+              <span className="w-2.5 h-2.5 rounded-full bg-purple-500 animate-pulse" />
+              Speaking — speak over to barge in & cancel playback
+            </span>
+          )}
         </div>
       )}
 

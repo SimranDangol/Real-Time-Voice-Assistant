@@ -5,15 +5,21 @@ import { z } from "zod";
 export const StartMessageSchema = z.object({
   type: z.literal("start"),
   sessionId: z.string().uuid(),
+  token: z.string().optional(),
 });
 
 export const StopMessageSchema = z.object({
   type: z.literal("stop"),
 });
 
+export const PingMessageSchema = z.object({
+  type: z.literal("ping"),
+});
+
 export const ClientMessageSchema = z.discriminatedUnion("type", [
   StartMessageSchema,
   StopMessageSchema,
+  PingMessageSchema,
 ]);
 
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;
@@ -47,6 +53,13 @@ export type ServerMessage =
       audio: "pcm" | "browser";
     }
   | {
+      type: "assistant.tool";
+      turnId: string;
+      tool: string;
+      args: Record<string, any>;
+      result: string;
+    }
+  | {
       type: "metrics";
       turnId: string;
       ttfaMs: number | null;
@@ -54,5 +67,13 @@ export type ServerMessage =
       sentence1Ms: number | null;
       totalLlmMs?: number | null;
     }
+  | {
+      /** Sent once per turn before its first binary PCM chunk; following binary
+       *  frames belong to this turn until the next audio.turn message. */
+      type: "audio.turn";
+      turnId: string;
+    }
   | { type: "interrupted"; turnId: string }
-  | { type: "error"; code: string; retryable: boolean };
+  | { type: "state"; state: "idle" | "listening" | "thinking" | "speaking" }
+  | { type: "pong" }
+  | { type: "error"; code: string; retryable: boolean; message?: string };
