@@ -1,0 +1,69 @@
+// Prisma Schema for Real-Time Voice Assistant (Postgres)
+// Section 3: Users, sessions, transcripts, per-turn metrics
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String    @id @default(uuid())
+  email     String?   @unique
+  name      String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  sessions  Session[]
+
+  @@map("users")
+}
+
+model Session {
+  id          String        @id @default(uuid())
+  userId      String?
+  user        User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  ip          String
+  startedAt   DateTime      @default(now())
+  endedAt     DateTime?
+  durationMs  Int?
+  transcripts Transcript[]
+  metrics     TurnMetric[]
+
+  @@map("sessions")
+}
+
+model Transcript {
+  id          String   @id @default(uuid())
+  sessionId   String
+  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  turnId      String
+  role        String   // "user" | "assistant" | "tool"
+  content     String
+  isFinal     Boolean  @default(true)
+  interrupted Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([sessionId])
+  @@index([turnId])
+  @@map("transcripts")
+}
+
+model TurnMetric {
+  id              String   @id @default(uuid())
+  sessionId       String
+  session         Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  turnId          String
+  ttfaMs          Int?
+  llmFirstTokenMs Int?
+  sentence1Ms     Int?
+  totalLlmMs      Int?
+  interrupted     Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  @@index([sessionId])
+  @@index([turnId])
+  @@map("turn_metrics")
+}
