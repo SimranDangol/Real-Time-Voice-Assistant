@@ -4,9 +4,17 @@ import { parseClientMessage, type ServerMessage } from "./protocol.js";
 import { createDeepgramASR, type ASRHandle } from "../providers/asr.deepgram.js";
 import { streamAssistantReply } from "../providers/llm.js";
 import { SentenceChunker } from "../pipeline/chunker.js";
-import { TurnTimer } from "../metrics.js";
+import { BargeInManager } from "../pipeline/bargein.js";
+import { TurnTimer, activeSessionsGauge, interruptedTurnsCounter } from "../metrics.js";
 import { createCartesiaTTS, type CartesiaTTSHandle } from "../providers/tts.cartesia.js";
 import { createElevenLabsTTS, type ElevenLabsTTSHandle } from "../providers/tts.elevenlabs.js";
+import {
+  registerSession,
+  unregisterSession,
+  updateSessionHeartbeat,
+  checkRateLimit,
+} from "../redis.js";
+import { enqueuePostCallSummary, type TurnSummary } from "../queue.js";
 
 type SessionState = "idle" | "listening" | "thinking" | "speaking";
 
@@ -24,33 +32,53 @@ function sendBinary(socket: WebSocket, data: Buffer): void {
   }
 }
 
+interface TtsHandle {
+  sendText: (text: string, isLast?: boolean) => void;
+  close: () => void;
+}
+
 /**
- * Manages one WebSocket connection:
- *  - receives binary audio frames → forwards to Deepgram
- *  - receives JSON control messages (start / stop)
- *  - relays transcripts back to the browser
- *  - streams LLM replies using SentenceChunker for early playback
- *  - calculates and emits latency metrics per turn
+ * Manages one WebSocket session:
+ *  - Turn State Machine (idle -> listening -> thinking -> speaking -> idle)
+ *  - Barge-in with immediate AbortController cancellation & history trimming
+ *  - Tool execution by voice with Redis short-lived caching
+ *  - Redis rate-limiting and session registry
+ *  - BullMQ post-call asynchronous summary & metrics rollups
  */
 export function handleSession(socket: WebSocket, sessionId: string, ip: string): void {
   const log = logger.child({ sessionId, ip });
   log.info("Session connected");
 
   let state: SessionState = "idle";
-  let asr: ASRHandle | null = null;
-  let llmAbort: AbortController | null = null;
-  let activeTurnId: string | null = null;
-  let currentTurn: { turnId: string; timer: TurnTimer } | null = null;
+  const sessionStartTime = Date.now();
+  const sessionTurns: TurnSummary[] = [];
 
-  interface TtsHandle {
-    sendText: (text: string, isLast?: boolean) => void;
-    close: () => void;
-  }
+  const bargeInManager = new BargeInManager();
+  let asr: ASRHandle | null = null;
+  let activeTurnId: string | null = null;
+  let currentTurn: { turnId: string; timer: TurnTimer; userText: string } | null = null;
+
+  // Track session registration in Redis & Prometheus
+  activeSessionsGauge.inc();
+  void registerSession(sessionId, ip, { userAgent: "voice-assistant-web" });
+
+  const setState = (next: SessionState) => {
+    state = next;
+    send(socket, { type: "state", state });
+  };
 
   const ttsCallbacks = {
     onAudioChunk(chunk: Buffer) {
-      currentTurn?.timer.markFirstAudio();
-      sendBinary(socket, chunk);
+      if (activeTurnId && currentTurn?.turnId === activeTurnId) {
+        currentTurn.timer.markFirstAudio();
+        // Tag the binary stream: announce the turn once; ordering associates
+        // all following PCM frames with it until the next audio.turn message.
+        if (activeTurnId !== lastAudioTurnId) {
+          lastAudioTurnId = activeTurnId;
+          send(socket, { type: "audio.turn", turnId: activeTurnId });
+        }
+        sendBinary(socket, chunk);
+      }
     },
     onError(err: Error) {
       log.warn({ err }, "Streaming TTS failed — falling back to browser speech");
@@ -62,10 +90,8 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
     },
   };
 
-  // Lazily create ONE streaming-TTS connection per session and keep it warm
-  // across turns. Returns null when TTS_PROVIDER=browser or no keys are set —
-  // the client then falls back to speechSynthesis.
   let ttsStream: TtsHandle | null = null;
+  let lastAudioTurnId: string | null = null;
   const ensureTts = (): TtsHandle | null => {
     if (ttsStream) return ttsStream;
 
@@ -86,60 +112,102 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
     ttsStream = null;
   };
 
-  const handleFinalTranscript = async (userText: string) => {
-    if (!userText.trim()) return;
+  /**
+   * Immediate barge-in interrupt: called when user begins speaking while the assistant
+   * is either thinking or speaking.
+   */
+  const triggerBargeIn = () => {
+    if ((state === "speaking" || state === "thinking") && activeTurnId) {
+      log.info({ turnId: activeTurnId, state }, "⚡ Barge-in triggered by user interruption");
+      interruptedTurnsCounter.inc();
+      
+      const interruptInfo = bargeInManager.interrupt();
+      const interruptedTurnId = activeTurnId;
+      activeTurnId = null;
 
-    // Barge-in: a new utterance while a turn is in flight interrupts it —
-    // tell the client to flush playback before starting the new turn.
-    const wasActive = activeTurnId !== null && (state === "thinking" || state === "speaking");
-    if (wasActive && activeTurnId) {
-      send(socket, { type: "interrupted", turnId: activeTurnId });
+      // Close current TTS audio stream
       closeTts();
+
+      // Tell the browser to instantly flush its audio playback buffers
+      send(socket, { type: "interrupted", turnId: interruptedTurnId });
+
+      if (currentTurn) {
+        sessionTurns.push({
+          turnId: interruptedTurnId,
+          userText: currentTurn.userText,
+          assistantText: interruptInfo?.spokenText ?? "",
+          ttfaMs: currentTurn.timer.getMetrics().ttfaMs,
+          llmFirstTokenMs: currentTurn.timer.getMetrics().llmFirstTokenMs,
+          sentence1Ms: currentTurn.timer.getMetrics().sentence1Ms,
+          interrupted: true,
+        });
+        currentTurn = null;
+      }
+
+      setState("listening");
+    }
+  };
+
+  const handleFinalTranscript = async (userText: string) => {
+    const trimmed = userText.trim();
+    if (!trimmed) return;
+
+    // If an existing turn was somehow still in flight, interrupt it first
+    if (state === "speaking" || state === "thinking") {
+      triggerBargeIn();
     }
 
-    const turnId = `t-${Date.now().toString(36)}`;
+    const { turnId, controller } = bargeInManager.startTurn(trimmed);
     activeTurnId = turnId;
-    state = "thinking";
+    setState("thinking");
 
     const timer = new TurnTimer(turnId);
-    currentTurn = { turnId, timer };
+    currentTurn = { turnId, timer, userText: trimmed };
     const chunker = new SentenceChunker();
     let sentenceIndex = 0;
 
-    log.info({ turnId, userText }, "Generating assistant reply");
+    log.info({ turnId, userText: trimmed }, "Generating assistant reply");
 
-    llmAbort?.abort();
-    const controller = new AbortController();
-    llmAbort = controller;
-
-    // Warm the TTS connection during LLM time-to-first-token.
+    // Warm the TTS connection during LLM time-to-first-token
     ensureTts();
 
     try {
       await streamAssistantReply({
-        prompt: userText,
-        log,
+        prompt: trimmed,
+        history: bargeInManager.getHistory().slice(0, -1), // prior history excluding this prompt
         signal: controller.signal,
+        log,
 
         onFirstToken() {
+          if (controller.signal.aborted) return;
           timer.markLlmFirstToken();
           log.info({ turnId, ttftMs: timer.getMetrics().llmFirstTokenMs }, "LLM first token received");
+        },
+
+        onToolCall(toolName, args, result) {
+          if (controller.signal.aborted) return;
+          log.info({ turnId, tool: toolName, args }, "Notifying client of voice tool call");
+          send(socket, {
+            type: "assistant.tool",
+            turnId,
+            tool: toolName,
+            args,
+            result,
+          });
         },
 
         onDelta(delta) {
           if (controller.signal.aborted) return;
 
-          // Slices token stream at sentence boundaries
           const sentences = chunker.push(delta);
           for (const sentence of sentences) {
+            bargeInManager.recordSpokenSentence(turnId, sentence);
+
             if (sentenceIndex === 0) {
               timer.markSentence1();
-              // Browser speechSynthesis starts on receipt; server TTS marks
-              // first audio when the first PCM chunk actually arrives.
               if (!ttsStream) timer.markFirstAudio();
-              state = "speaking";
+              setState("speaking");
 
-              // Emit early latency metrics (TTFA)
               const metrics = timer.getMetrics();
               log.info({ turnId, metrics }, "First sentence ready (TTFA hit)");
               send(socket, {
@@ -172,9 +240,10 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
           if (controller.signal.aborted) return;
           timer.markLlmEnd();
 
-          // Flush any trailing sentence
           const remaining = chunker.flush();
           if (remaining) {
+            bargeInManager.recordSpokenSentence(turnId, remaining);
+
             if (sentenceIndex === 0) {
               timer.markSentence1();
               if (!ttsStream) timer.markFirstAudio();
@@ -201,7 +270,6 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
 
           send(socket, { type: "assistant.final", text: fullText });
 
-          // Final per-turn metrics, now including total LLM time
           const finalMetrics = timer.getMetrics();
           send(socket, {
             type: "metrics",
@@ -212,7 +280,20 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
             totalLlmMs: finalMetrics.totalLlmMs,
           });
 
-          state = "listening";
+          bargeInManager.completeTurn(turnId, fullText);
+
+          sessionTurns.push({
+            turnId,
+            userText: trimmed,
+            assistantText: fullText,
+            ttfaMs: finalMetrics.ttfaMs,
+            llmFirstTokenMs: finalMetrics.llmFirstTokenMs,
+            sentence1Ms: finalMetrics.sentence1Ms,
+            interrupted: false,
+          });
+
+          activeTurnId = null;
+          setState("listening");
           log.info({ turnId, metrics: finalMetrics }, "Turn complete");
         },
 
@@ -221,7 +302,8 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
           if (!controller.signal.aborted) {
             send(socket, { type: "error", code: "llm_error", retryable: true });
           }
-          state = "listening";
+          activeTurnId = null;
+          setState("listening");
         },
       });
     } catch (err) {
@@ -229,9 +311,30 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
       if (!controller.signal.aborted) {
         send(socket, { type: "error", code: "llm_unavailable", retryable: true });
       }
-      state = "listening";
+      activeTurnId = null;
+      setState("listening");
     }
   };
+
+  // Heartbeat & session lifecycle timers
+  const heartbeatInterval = setInterval(() => {
+    void updateSessionHeartbeat(sessionId);
+    if (socket.readyState === socket.OPEN) {
+      send(socket, { type: "pong" });
+    }
+  }, 30000);
+
+  // Maximum session length safeguard (15 minutes)
+  const maxSessionTimeout = setTimeout(() => {
+    log.info("Max session duration reached (15m), closing session gracefully");
+    send(socket, {
+      type: "error",
+      code: "session_timeout",
+      retryable: false,
+      message: "Max session duration reached",
+    });
+    socket.close(1000, "Max session duration");
+  }, 15 * 60 * 1000);
 
   // ── Incoming messages ──────────────────────────────────────────────────────
   socket.on("message", (data: Buffer, isBinary: boolean) => {
@@ -252,41 +355,66 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
 
     const msg = result.data;
 
+    if (msg.type === "ping") {
+      send(socket, { type: "pong" });
+      return;
+    }
+
     if (msg.type === "start") {
       if (state !== "idle") return;
 
-      const apiKey = process.env.DEEPGRAM_API_KEY;
-      if (!apiKey) {
-        log.error("DEEPGRAM_API_KEY is not set");
-        send(socket, { type: "error", code: "asr_misconfigured", retryable: false });
-        return;
-      }
+      // Rate limit session start (max 20 sessions per minute per IP)
+      void checkRateLimit(`session_start:${ip}`, 20, 60).then(({ allowed }) => {
+        if (!allowed) {
+          log.warn({ ip }, "Session start rejected: rate limit exceeded");
+          send(socket, {
+            type: "error",
+            code: "rate_limit_exceeded",
+            retryable: true,
+            message: "Too many sessions from this IP. Please wait a minute.",
+          });
+          socket.close(1008, "Rate limit exceeded");
+          return;
+        }
 
-      state = "listening";
-      log.info("Listening started");
+        const apiKey = process.env.DEEPGRAM_API_KEY;
+        if (!apiKey) {
+          log.error("DEEPGRAM_API_KEY is not set");
+          send(socket, { type: "error", code: "asr_misconfigured", retryable: false });
+          return;
+        }
 
-      asr = createDeepgramASR(
-        apiKey,
-        {
-          onPartial(text) {
-            send(socket, { type: "transcript.partial", text });
+        setState("listening");
+        log.info("Listening started");
+
+        asr = createDeepgramASR(
+          apiKey,
+          {
+            onPartial(text) {
+              // Real-time barge-in: as soon as speech is heard while the assistant
+              // is speaking or thinking, interrupt immediately!
+              if ((state === "speaking" || state === "thinking") && text.trim().length > 1) {
+                triggerBargeIn();
+              }
+              send(socket, { type: "transcript.partial", text });
+            },
+            onFinal(text) {
+              send(socket, { type: "transcript.final", text });
+              log.info({ text }, "Final transcript");
+              void handleFinalTranscript(text);
+            },
+            onError(err) {
+              log.error({ err }, "ASR error");
+              send(socket, { type: "error", code: "asr_error", retryable: true });
+            },
+            onClose() {
+              setState("idle");
+              asr = null;
+            },
           },
-          onFinal(text) {
-            send(socket, { type: "transcript.final", text });
-            log.info({ text }, "Final transcript");
-            void handleFinalTranscript(text);
-          },
-          onError(err) {
-            log.error({ err }, "ASR error");
-            send(socket, { type: "error", code: "asr_error", retryable: true });
-          },
-          onClose() {
-            state = "idle";
-            asr = null;
-          },
-        },
-        log
-      );
+          log
+        );
+      });
     }
 
     if (msg.type === "stop") {
@@ -294,31 +422,47 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
       if (activeTurnId) {
         send(socket, { type: "interrupted", turnId: activeTurnId });
       }
-      llmAbort?.abort();
+      triggerBargeIn();
       closeTts();
       asr?.close();
       asr = null;
-      state = "idle";
+      setState("idle");
       currentTurn = null;
     }
   });
 
-  // ── Cleanup ────────────────────────────────────────────────────────────────
-  socket.on("close", (code) => {
-    log.info({ code }, "Session disconnected");
-    llmAbort?.abort();
+  // ── Session Teardown & Post-Call BullMQ Job ───────────────────────────────────
+  const finalizeSession = () => {
+    activeSessionsGauge.dec();
+    clearInterval(heartbeatInterval);
+    clearTimeout(maxSessionTimeout);
+
+    triggerBargeIn();
     closeTts();
     asr?.close();
     asr = null;
     currentTurn = null;
+
+    void unregisterSession(sessionId);
+
+    // Enqueue post-call metrics and summary job to BullMQ
+    const durationMs = Date.now() - sessionStartTime;
+    void enqueuePostCallSummary({
+      sessionId,
+      ip,
+      durationMs,
+      turnCount: sessionTurns.length,
+      turns: sessionTurns,
+    });
+  };
+
+  socket.on("close", (code) => {
+    log.info({ code }, "Session disconnected");
+    finalizeSession();
   });
 
   socket.on("error", (err) => {
     log.error({ err }, "Socket error");
-    llmAbort?.abort();
-    closeTts();
-    asr?.close();
-    asr = null;
-    currentTurn = null;
+    finalizeSession();
   });
 }
