@@ -29,10 +29,7 @@ const ABBREVIATIONS = new Set([
 export class SentenceChunker {
   private buffer = "";
 
-  /**
-   * Push a newly received token delta from the LLM.
-   * Returns any complete sentences ready for TTS.
-   */
+  
   public push(delta: string): string[] {
     this.buffer += delta;
     const sentences: string[] = [];
