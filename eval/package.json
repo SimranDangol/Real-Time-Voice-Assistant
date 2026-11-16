@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "wer": "tsx wer.ts",
+    "wer:live": "tsx wer.ts --live",
     "latency": "tsx latency-report.ts",
     "generate:audio": "tsx generate-audio.ts",
     "generate:logs": "tsx generate-logs.ts"

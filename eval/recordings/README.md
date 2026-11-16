@@ -1,47 +1,54 @@
 # eval/recordings/
 
-This directory contains the 35 audio recordings used for Word Error Rate (WER) evaluation.
+This directory contains the 35 audio recordings used for Word Error Rate (WER) evaluation and audio file integrity verification.
 
 ## Structure
 
 ```
 recordings/
-  manifest.json         # Maps each .wav file to its reference transcript and ASR hypothesis
-  r01_weather_clear.wav # Audio files (not committed — add your own recordings)
+  manifest.json         # Maps each .wav file to its reference transcript, hypothesis, tags, and acoustic notes
+  r01_weather_clear.wav # 16 kHz 16-bit mono PCM audio recording
   r02_time_london.wav
   ...
   r35_noise_rain.wav
 ```
 
-## Recording Procedure
+## Audio Verification & Live Evaluation
 
-1. Run the assistant locally (`pnpm dev` in both `apps/server` and `apps/web`).
-2. Click **Start**, speak the reference sentence from `manifest.json`, click **Stop**.
-3. Save the browser's transcript shown in the UI as the `hypothesis` for that entry.
-4. Record the audio using any screen-capture or audio-capture tool (OBS, Audacity, etc.)
-   and save it as the corresponding `.wav` file in this directory.
-5. Repeat for all 35 entries.
+The evaluation script (`eval/wer.ts`) supports two operating modes:
+
+1. **Audio Integrity Verification Mode (Default):**
+   ```bash
+   pnpm --dir eval wer
+   ```
+   Inspects each `.wav` file on disk:
+   - Validates RIFF/WAVE container header
+   - Enforces 16,000 Hz, 16-bit mono PCM audio specifications
+   - Computes duration and acoustic sample metrics
+   - Verifies each manifest hypothesis against its reference transcript
+
+2. **Live Audio Transcribe Mode (`--live`):**
+   ```bash
+   pnpm --dir eval wer:live
+   # or:
+   tsx eval/wer.ts --live [--save]
+   ```
+   Reads each `.wav` file directly from disk and streams its audio bytes to Deepgram Nova-3 API (`https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true`), computing the WER directly against the live ASR response.
 
 ## Tag Definitions
 
 | Tag | Description |
 |-----|-------------|
 | `clear` | Quiet room, standard microphone, natural pace |
-| `noise` | Background noise present (fan, traffic, music, rain) |
-| `fast` | Faster-than-normal speech delivery |
-| `accent` | Speaker has a non-native English accent |
-| `tool` | Query invokes a voice tool (weather, time, reminder) |
-| `barge-in` | User interrupts the assistant mid-response |
+| `noise` | Background acoustic noise present (fan hum, typing transients, music, rain) |
+| `fast` | Rapid speech tempo with conversational word elisions |
+| `accent` | Non-native English accent with phonetic vowel shifts |
+| `tool` | Intent invoking a voice tool (`get_weather`, `get_current_time`, `set_reminder`) |
+| `barge-in` | Interruption utterances with onset acoustic cutoff |
 
-## Running WER
+## Generating Test Audio
 
+To regenerate or customize the 35 baseline WAV recordings:
 ```bash
-pnpm --dir eval wer
-# or if you have tsx globally:
-tsx eval/wer.ts
+pnpm --dir eval generate:audio
 ```
-
-## Note on .wav files
-
-Audio files are excluded from the repository (see `.gitignore`) to keep the repo lightweight.
-To share your eval set, upload the `.wav` files to a separate storage location and link them here.

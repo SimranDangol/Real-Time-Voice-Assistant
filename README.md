@@ -288,16 +288,20 @@ docker compose up          # builds API image + starts redis + postgres + api
 ## Evaluation Scripts
 
 ```bash
-# WER — reads eval/recordings/manifest.json
-tsx eval/wer.ts
+# 1. WER with audio file verification (checks 35/35 .wav files on disk)
+pnpm --dir eval wer
+# or: tsx eval/wer.ts
 
-# Latency report — reads apps/server/server.log
-tsx eval/latency-report.ts
+# 2. Live audio transcription (streams actual .wav audio bytes to Deepgram Nova-3 API)
+pnpm --dir eval wer:live
+# or: tsx eval/wer.ts --live [--save]
 
-# Point to a custom log
+# 3. Latency report — computes p50/p75/p95 percentiles from apps/server/server.log
+pnpm --dir eval latency
+# or: tsx eval/latency-report.ts
+
+# Optional: Point to custom log or manifest files
 tsx eval/latency-report.ts --log /path/to/server.log
-
-# Point to a custom manifest
 tsx eval/wer.ts --manifest /path/to/manifest.json
 ```
 
