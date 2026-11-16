@@ -4,7 +4,18 @@ import { useMic } from "@/hooks/useMic";
 import { TranscriptView } from "@/components/TranscriptView";
 
 export default function Home() {
-  const { isListening, assistantState, transcripts, metrics, error, start, stop } = useMic();
+  const {
+    isListening,
+    assistantState,
+    transcripts,
+    metrics,
+    error,
+    start,
+    stop,
+    interrupt,
+    headphonesMode,
+    setHeadphonesMode,
+  } = useMic();
 
   return (
     <main
@@ -60,30 +71,64 @@ export default function Home() {
         </div>
       )}
 
-      {/* Mic Button */}
-      <button
-        onClick={isListening ? stop : start}
-        aria-label={isListening ? "Stop listening" : "Start listening"}
-        style={{
-          width: "100px",
-          height: "100px",
-          borderRadius: "50%",
-          fontWeight: 600,
-          fontSize: "1rem",
-          color: "#ffffff",
-          background: isListening ? "var(--danger)" : "var(--accent)",
-          transform: isListening ? "scale(1.05)" : "scale(1)",
-          cursor: "pointer",
-          border: "none",
-          outline: "none",
-          transition: "all 0.2s ease-in-out",
-          boxShadow: isListening
-            ? "0 0 25px rgba(239, 68, 68, 0.6)"
-            : "0 0 25px rgba(59, 130, 246, 0.4)",
-        }}
-      >
-        {isListening ? "Stop" : "Start"}
-      </button>
+      {/* Action Controls */}
+      <div className="flex items-center gap-4">
+        <button
+          onClick={isListening ? stop : start}
+          aria-label={isListening ? "Stop listening" : "Start listening"}
+          style={{
+            width: "100px",
+            height: "100px",
+            borderRadius: "50%",
+            fontWeight: 600,
+            fontSize: "1rem",
+            color: "#ffffff",
+            background: isListening ? "var(--danger)" : "var(--accent)",
+            transform: isListening ? "scale(1.05)" : "scale(1)",
+            cursor: "pointer",
+            border: "none",
+            outline: "none",
+            transition: "all 0.2s ease-in-out",
+            boxShadow: isListening
+              ? "0 0 25px rgba(239, 68, 68, 0.6)"
+              : "0 0 25px rgba(59, 130, 246, 0.4)",
+          }}
+        >
+          {isListening ? "Stop" : "Start"}
+        </button>
+
+        {isListening && assistantState === "speaking" && (
+          <button
+            onClick={interrupt}
+            className="px-4 py-2.5 rounded-full text-xs font-semibold uppercase tracking-wider transition-all"
+            style={{
+              background: "rgba(239, 68, 68, 0.2)",
+              color: "#ef4444",
+              border: "1px solid rgba(239, 68, 68, 0.4)",
+              cursor: "pointer",
+            }}
+          >
+            ⚡ Interrupt
+          </button>
+        )}
+      </div>
+
+      {/* Audio Echo Guard Toggle */}
+      <div className="flex items-center gap-2 text-xs font-mono">
+        <button
+          onClick={() => setHeadphonesMode((h) => !h)}
+          className="px-3 py-1.5 rounded-lg border transition-all"
+          style={{
+            background: headphonesMode ? "rgba(168, 85, 247, 0.15)" : "rgba(255, 255, 255, 0.05)",
+            borderColor: headphonesMode ? "#a855f7" : "var(--border)",
+            color: headphonesMode ? "#c084fc" : "var(--muted)",
+            cursor: "pointer",
+          }}
+          title="Toggle between Speaker Echo Guard and Full Headphones Barge-In"
+        >
+          {headphonesMode ? "🎧 Headphones Mode (Full Voice Barge-In)" : "🔊 Speaker Mode (Echo Guard Active)"}
+        </button>
+      </div>
 
       {/* State Machine Status indicator */}
       {isListening && (

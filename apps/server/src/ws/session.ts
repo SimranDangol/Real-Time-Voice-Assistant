@@ -15,6 +15,7 @@ import {
   checkRateLimit,
 } from "../redis.js";
 import { enqueuePostCallSummary, type TurnSummary } from "../queue.js";
+import { captureError } from "../sentry.js";
 
 type SessionState = "idle" | "listening" | "thinking" | "speaking";
 
@@ -52,11 +53,21 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
   let state: SessionState = "idle";
   const sessionStartTime = Date.now();
   const sessionTurns: TurnSummary[] = [];
+  let finalized = false;
 
   const bargeInManager = new BargeInManager();
   let asr: ASRHandle | null = null;
   let activeTurnId: string | null = null;
   let currentTurn: { turnId: string; timer: TurnTimer; userText: string } | null = null;
+  let selectedTtsProvider: "cartesia" | "elevenlabs" | null = null;
+  let receivedAudioForTurn = false;
+  let lastTtsSentence: {
+    turnId: string;
+    sentenceIndex: number;
+    text: string;
+    isLast: boolean;
+  } | null = null;
+  const failedTtsProviders = new Set<"cartesia" | "elevenlabs">();
 
   // Track session registration in Redis & Prometheus
   activeSessionsGauge.inc();
@@ -67,12 +78,39 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
     send(socket, { type: "state", state });
   };
 
-  const ttsCallbacks = {
+  let ttsStream: TtsHandle | null = null;
+  let lastAudioTurnId: string | null = null;
+  let ensureTts: () => TtsHandle | null = () => null;
+  const handleTtsFailure = (provider: "cartesia" | "elevenlabs", err: Error) => {
+    if (selectedTtsProvider !== provider) return;
+    log.warn({ provider, errorName: err.name }, "Streaming TTS failed; selecting a fallback");
+    captureError(err, { component: "tts", provider });
+    failedTtsProviders.add(provider);
+
+    const failedStream = ttsStream;
+    ttsStream = null;
+    selectedTtsProvider = null;
+    failedStream?.close();
+
+    const fallback = ensureTts();
+    if (activeTurnId && lastTtsSentence?.turnId === activeTurnId && !receivedAudioForTurn) {
+      if (fallback) {
+        fallback.sendText(lastTtsSentence.text, lastTtsSentence.isLast);
+      } else {
+        send(socket, {
+          type: "assistant.sentence",
+          ...lastTtsSentence,
+          audio: "browser",
+        });
+      }
+    }
+  };
+  const createTtsCallbacks = (provider: "cartesia" | "elevenlabs") => ({
     onAudioChunk(chunk: Buffer) {
+      if (selectedTtsProvider !== provider) return;
       if (activeTurnId && currentTurn?.turnId === activeTurnId) {
+        receivedAudioForTurn = true;
         currentTurn.timer.markFirstAudio();
-        // Tag the binary stream: announce the turn once; ordering associates
-        // all following PCM frames with it until the next audio.turn message.
         if (activeTurnId !== lastAudioTurnId) {
           lastAudioTurnId = activeTurnId;
           send(socket, { type: "audio.turn", turnId: activeTurnId });
@@ -81,28 +119,41 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
       }
     },
     onError(err: Error) {
-      log.warn({ err }, "Streaming TTS failed — falling back to browser speech");
-      ttsStream = null;
+      handleTtsFailure(provider, err);
     },
     onDone() {},
     onDisconnect() {
-      ttsStream = null;
+      handleTtsFailure(provider, new Error("Streaming TTS disconnected"));
     },
-  };
+  });
 
-  let ttsStream: TtsHandle | null = null;
-  let lastAudioTurnId: string | null = null;
-  const ensureTts = (): TtsHandle | null => {
+  ensureTts = () => {
     if (ttsStream) return ttsStream;
 
     const provider = (process.env.TTS_PROVIDER ?? "auto").trim().toLowerCase();
     const cartesiaKey = process.env.CARTESIA_API_KEY?.trim();
     const elevenKey = process.env.ELEVENLABS_API_KEY?.trim();
+    const preference: Array<"cartesia" | "elevenlabs"> =
+      provider === "cartesia"
+        ? ["cartesia", "elevenlabs"]
+        : provider === "elevenlabs"
+          ? ["elevenlabs", "cartesia"]
+          : provider === "browser"
+            ? []
+            : ["cartesia", "elevenlabs"];
 
-    if (provider !== "browser" && provider !== "elevenlabs" && cartesiaKey) {
-      ttsStream = createCartesiaTTS(cartesiaKey, ttsCallbacks, log);
-    } else if (provider !== "browser" && provider !== "cartesia" && elevenKey) {
-      ttsStream = createElevenLabsTTS(elevenKey, ttsCallbacks, log);
+    for (const candidate of preference) {
+      if (failedTtsProviders.has(candidate)) continue;
+      if (candidate === "cartesia" && cartesiaKey) {
+        selectedTtsProvider = candidate;
+        ttsStream = createCartesiaTTS(cartesiaKey, createTtsCallbacks(candidate), log);
+        break;
+      }
+      if (candidate === "elevenlabs" && elevenKey) {
+        selectedTtsProvider = candidate;
+        ttsStream = createElevenLabsTTS(elevenKey, createTtsCallbacks(candidate), log);
+        break;
+      }
     }
     return ttsStream;
   };
@@ -110,6 +161,7 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
   const closeTts = () => {
     ttsStream?.close();
     ttsStream = null;
+    selectedTtsProvider = null;
   };
 
   /**
@@ -151,6 +203,7 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
           ttfaMs: turnMetrics.ttfaMs,
           llmFirstTokenMs: turnMetrics.llmFirstTokenMs,
           sentence1Ms: turnMetrics.sentence1Ms,
+          totalLlmMs: turnMetrics.totalLlmMs,
           interrupted: true,
         });
         currentTurn = null;
@@ -171,19 +224,55 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
 
     const { turnId, controller } = bargeInManager.startTurn(trimmed);
     activeTurnId = turnId;
+    receivedAudioForTurn = false;
+    lastTtsSentence = null;
     setState("thinking");
 
     const timer = new TurnTimer(turnId);
     currentTurn = { turnId, timer, userText: trimmed };
     const chunker = new SentenceChunker();
+    const bufferedTts = process.env.TTS_STREAMING_MODE === "buffered";
+    let bufferedReply = "";
     let sentenceIndex = 0;
 
-    log.info({ turnId, userText: trimmed }, "Generating assistant reply");
+    log.info({ turnId }, "Generating assistant reply");
 
-    // Warm the TTS connection during LLM time-to-first-token
-    ensureTts();
+    const emitSentence = (sentence: string, isLast: boolean) => {
+      if (!sentence) return;
+      bargeInManager.recordSpokenSentence(turnId, sentence);
+
+      if (sentenceIndex === 0) {
+        timer.markSentence1();
+        if (!ttsStream) timer.markFirstAudio();
+        setState("speaking");
+
+        const metrics = timer.getMetrics();
+        log.info({ turnId, metrics }, "First sentence ready (TTFA hit)");
+        send(socket, {
+          type: "metrics",
+          turnId,
+          ttfaMs: metrics.ttfaMs,
+          llmFirstTokenMs: metrics.llmFirstTokenMs,
+          sentence1Ms: metrics.sentence1Ms,
+        });
+      }
+
+      lastTtsSentence = { turnId, sentenceIndex, text: sentence, isLast };
+      ttsStream?.sendText(sentence, isLast);
+      send(socket, {
+        type: "assistant.sentence",
+        turnId,
+        sentenceIndex: sentenceIndex++,
+        text: sentence,
+        isLast,
+        audio: ttsStream ? "pcm" : "browser",
+      });
+    };
 
     try {
+      // Warm the TTS connection during LLM time-to-first-token
+      ensureTts();
+
       await streamAssistantReply({
         prompt: trimmed,
         history: bargeInManager.getHistory().slice(0, -1), // prior history excluding this prompt
@@ -198,7 +287,7 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
 
         onToolCall(toolName, args, result) {
           if (controller.signal.aborted) return;
-          log.info({ turnId, tool: toolName, args }, "Notifying client of voice tool call");
+          log.info({ turnId, tool: toolName }, "Notifying client of voice tool call");
           send(socket, {
             type: "assistant.tool",
             turnId,
@@ -211,36 +300,11 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
         onDelta(delta) {
           if (controller.signal.aborted) return;
 
-          const sentences = chunker.push(delta);
-          for (const sentence of sentences) {
-            bargeInManager.recordSpokenSentence(turnId, sentence);
-
-            if (sentenceIndex === 0) {
-              timer.markSentence1();
-              if (!ttsStream) timer.markFirstAudio();
-              setState("speaking");
-
-              const metrics = timer.getMetrics();
-              log.info({ turnId, metrics }, "First sentence ready (TTFA hit)");
-              send(socket, {
-                type: "metrics",
-                turnId,
-                ttfaMs: metrics.ttfaMs,
-                llmFirstTokenMs: metrics.llmFirstTokenMs,
-                sentence1Ms: metrics.sentence1Ms,
-              });
-            }
-
-            ttsStream?.sendText(sentence, false);
-            send(socket, {
-              type: "assistant.sentence",
-              turnId,
-              sentenceIndex: sentenceIndex++,
-              text: sentence,
-              isLast: false,
-              audio: ttsStream ? "pcm" : "browser",
-            });
+          if (bufferedTts) {
+            bufferedReply += delta;
+            return;
           }
+          for (const sentence of chunker.push(delta)) emitSentence(sentence, false);
         },
 
         onPartial(fullText) {
@@ -252,33 +316,16 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
           if (controller.signal.aborted) return;
           timer.markLlmEnd();
 
-          const remaining = chunker.flush();
-          if (remaining) {
-            bargeInManager.recordSpokenSentence(turnId, remaining);
-
-            if (sentenceIndex === 0) {
-              timer.markSentence1();
-              if (!ttsStream) timer.markFirstAudio();
-              const metrics = timer.getMetrics();
-              send(socket, {
-                type: "metrics",
-                turnId,
-                ttfaMs: metrics.ttfaMs,
-                llmFirstTokenMs: metrics.llmFirstTokenMs,
-                sentence1Ms: metrics.sentence1Ms,
-              });
-            }
-
-            ttsStream?.sendText(remaining, true);
-            send(socket, {
-              type: "assistant.sentence",
-              turnId,
-              sentenceIndex: sentenceIndex++,
-              text: remaining,
-              isLast: true,
-              audio: ttsStream ? "pcm" : "browser",
-            });
+          let sentences: string[];
+          if (bufferedTts) {
+            const completed = chunker.push(bufferedReply || fullText);
+            const remaining = chunker.flush();
+            sentences = remaining ? [...completed, remaining] : completed;
+          } else {
+            const remaining = chunker.flush();
+            sentences = remaining ? [remaining] : [];
           }
+          sentences.forEach((sentence, index) => emitSentence(sentence, index === sentences.length - 1));
 
           send(socket, { type: "assistant.final", text: fullText });
 
@@ -301,6 +348,7 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
             ttfaMs: finalMetrics.ttfaMs,
             llmFirstTokenMs: finalMetrics.llmFirstTokenMs,
             sentence1Ms: finalMetrics.sentence1Ms,
+            totalLlmMs: finalMetrics.totalLlmMs,
             interrupted: false,
           });
 
@@ -321,7 +369,8 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
         },
 
         onError(err) {
-          log.error({ turnId, err }, "LLM generation error");
+          log.error({ turnId, errorName: err.name }, "LLM generation error");
+          captureError(err, { component: "llm" });
           if (!controller.signal.aborted) {
             send(socket, { type: "error", code: "llm_error", retryable: true });
           }
@@ -330,7 +379,8 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
         },
       });
     } catch (err) {
-      log.error({ turnId, err }, "LLM generation failed");
+      log.error({ turnId, errorName: err instanceof Error ? err.name : "unknown" }, "LLM generation failed");
+      captureError(err, { component: "llm" });
       if (!controller.signal.aborted) {
         send(socket, { type: "error", code: "llm_unavailable", retryable: true });
       }
@@ -414,20 +464,23 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
           apiKey,
           {
             onPartial(text) {
-              // Real-time barge-in: as soon as speech is heard while the assistant
-              // is speaking or thinking, interrupt immediately!
-              if ((state === "speaking" || state === "thinking") && text.trim().length > 1) {
+              // Real-time barge-in: only interrupt when the assistant is actively
+              // speaking aloud to the user and new user speech is detected.
+              // Do NOT interrupt during "thinking" as trailing query frames arrive then.
+              if (state === "speaking" && text.trim().length >= 4) {
+                log.info({ partialText: text }, "Barge-in triggered by user interruption");
                 triggerBargeIn();
               }
               send(socket, { type: "transcript.partial", text });
             },
             onFinal(text) {
               send(socket, { type: "transcript.final", text });
-              log.info({ text }, "Final transcript");
+              log.info("Final transcript received");
               void handleFinalTranscript(text);
             },
             onError(err) {
-              log.error({ err }, "ASR error");
+              log.error({ errorName: err.name }, "ASR error");
+              captureError(err, { component: "asr" });
               send(socket, { type: "error", code: "asr_error", retryable: true });
             },
             onClose() {
@@ -456,6 +509,9 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
 
   // ── Session Teardown & Post-Call BullMQ Job ───────────────────────────────────
   const finalizeSession = () => {
+    if (finalized) return;
+    finalized = true;
+
     activeSessionsGauge.dec();
     clearInterval(heartbeatInterval);
     clearTimeout(maxSessionTimeout);
@@ -468,14 +524,18 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
 
     void unregisterSession(sessionId);
 
-    // Enqueue post-call metrics and summary job to BullMQ
-    const durationMs = Date.now() - sessionStartTime;
+    const endedAtMs = Date.now();
+    const durationMs = endedAtMs - sessionStartTime;
     void enqueuePostCallSummary({
       sessionId,
       ip,
+      startedAtMs: sessionStartTime,
+      endedAtMs,
       durationMs,
       turnCount: sessionTurns.length,
       turns: sessionTurns,
+    }).catch((err) => {
+      log.error({ err }, "Failed to persist post-call session data");
     });
   };
 
