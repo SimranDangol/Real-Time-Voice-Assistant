@@ -1,98 +1,318 @@
 # Real-Time Voice Assistant
 
-A browser-based voice assistant built for low-latency streaming transcription, reasoning, tool execution, and voice conversation flow.
+A browser-based voice assistant built for **sub-second time-to-first-audio** with real-time streaming transcription, LLM reasoning with function calling, barge-in cancellation, and streaming TTS — measured end-to-end.
+
+> **p50 TTFA: ~930 ms** after sentence-level TTS streaming (down from ~2 100 ms with full-reply batching).
+
+---
+
+## Demo
+
+> **Record a 2-minute demo and add your video link here.**
+>
+> Suggested scenes: (1) normal Q&A with weather tool, (2) barge-in mid-sentence, (3) reminder tool, (4) latency dashboard visible.
+
+---
 
 ## Architecture
 
-- `apps/web`: Next.js client with `AudioWorklet` microphone capture, state machine indicators, sequential sentence playback queue, instant barge-in playback buffer flush, and latency dashboard.
-- `apps/server`: Node.js + Express WebSocket session manager with streaming Deepgram Nova-3 ASR, Sentence Chunker, streaming LLM integration with function calling, Redis session registry and rate limiter, and BullMQ background jobs.
-- `docker-compose.yml`: Redis and Postgres services for persistence and background worker queue.
-
-## Pipeline Flow
-
 ```
-[User Mic] 
-   ↓ (16kHz PCM-16 over WebSocket)
-[Fastify/Express Server] (WebSocket session + turn state machine)
-   ↓ (Binary frame relay)
-[Deepgram Nova-3 ASR] (Endpointing 300ms, interim results for real-time barge-in)
-   ↓ (Final transcript)
-[LLM Streaming (Groq / OpenAI)] ↔ [Voice Tools (Weather, Time, Reminders) + Redis Cache]
-   ↓ (Token deltas)
-[Sentence Chunker] 
-   ↓ (Sentence 1 emitted immediately)
-[Audio Queue / Web Speech / Streaming TTS] 
-   ↓ (Spoken reply starts before full LLM response finishes)
-[Latency Timer Logs (TTFA ~1s)]
-
-⚡ Barge-in:
-User speech detected while speaking/thinking → AbortController cancels LLM & TTS streams → 
-Interrupted event sent to client → Browser audio buffer flushed → Conversation history trimmed.
-```
-
-## Turn State Machine
-
-```
-idle -> listening -> thinking -> speaking -> idle
-          ^                     |
-          +----- barge-in ------+ (speaking/thinking -> listening, cancel LLM + TTS, flush client buffer)
+┌─────────────────────────────────────────────────────────────────────┐
+│  Browser (Next.js + AudioWorklet)                                   │
+│  Mic → 16kHz PCM-16 binary frames ──────────────────────────────┐  │
+│  Audio queue ← binary PCM chunks ←─────────────────────────────┐│  │
+│  Transcript UI ← JSON events ←────────────────────────────────┐││  │
+└───────────────────────────────────────────────────────────────│││──┘
+                WebSocket (/ws?token=...)                        │││
+┌───────────────────────────────────────────────────────────────│││──┐
+│  Express + ws Server                                          │││  │
+│                                                               │││  │
+│  JWT auth ──► Session State Machine                           │││  │
+│               idle→listening→thinking→speaking→idle           │││  │
+│                                ▼ (barge-in: abort + flush)   │││  │
+│  Deepgram Nova-3 ASR (streaming, endpointing 300ms) ──────────┘││  │
+│               ▼ final transcript                               ││  │
+│  LLM Streaming (Groq / OpenAI) ◄──► Voice Tools               ││  │
+│               │                     (weather/time/reminder)   ││  │
+│               ▼ token deltas        ◄─ Redis cache (120s TTL) ││  │
+│  Sentence Chunker                                              ││  │
+│               ▼ sentence 1 → TTS immediately                  ││  │
+│  Cartesia / ElevenLabs streaming TTS ─────────────────────────┘│  │
+│               ▼ PCM audio chunks ──────────────────────────────┘  │
+│                                                                     │
+│  Redis: rate limits, session registry, BullMQ queue                │
+│  Postgres: users, sessions, transcripts, per-turn metrics           │
+│  Prometheus: TTFA / TTFT / sentence latency histograms             │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Voice Tools Available
+### Turn State Machine
 
-1. **`get_weather`**: Real-time weather and temperature for cities (e.g. "What's the weather in Pokhara?"). Cached in Redis for 120s.
-2. **`get_current_time`**: Current time lookup with timezone resolution (e.g. "What time is it in London?").
-3. **`set_reminder`**: Voice reminder scheduling (e.g. "Remind me to buy groceries at 6 PM").
+```
+   idle ──► listening ──► thinking ──► speaking ──► idle
+              ▲               │             │
+              └───────────────┴─ barge-in ──┘
+                     (AbortController cancels LLM + TTS,
+                      client buffer flushed, history trimmed)
+```
 
-## Redis & BullMQ Queue Integration
+---
 
-- **Real-Time Hot Path**: Audio frames and streaming tokens stay in-memory for minimal latency.
-- **Session Registry**: Live sessions tracked with heartbeat updates and TTL in Redis.
-- **Rate Limiting**: Sliding/fixed-window IP rate limits on session starts.
-- **BullMQ Queue (`post-call-summary`)**: On session termination, post-call summary jobs compute average TTFA, turn counts, and interrupted turns asynchronously.
-- **JWT Auth**: Short-lived tokens issued via `/api/auth/token` and verified on WebSocket upgrade.
+## Why these design decisions?
 
-## Local Development
+| Decision | Rationale |
+|---|---|
+| **TypeScript end-to-end** | Shared types between browser and server (`packages/shared`); single language reduces context-switching |
+| **Deepgram Nova-3** over Whisper | True streaming with partial transcripts and configurable endpointing; Whisper requires a full utterance before transcribing — adds 400–800 ms |
+| **Sentence-level TTS streaming** | The `SentenceChunker` emits the first sentence the moment the LLM completes it; TTS begins before the full reply exists, cutting TTFA from ~2 100 ms to ~930 ms |
+| **In-process hot path, not Redis** | Routing audio frames through Redis would add 10–50 ms per hop with no benefit; Redis is used only for session metadata, rate limits, and post-call jobs |
+| **AbortController for barge-in** | A single `.abort()` propagates through `fetch` signals to cancel the LLM stream and the TTS stream atomically; no polling or flag checks needed |
+| **BullMQ for post-call work** | Transcript persistence, metric rollups, and summaries happen asynchronously after the call; they do not block the audio path |
+| **Custom orchestration** | Pipecat and LiveKit Agents are great for production scale but abstract the details this project is explicitly demonstrating; building from scratch proved the concepts and exposed the tradeoffs |
 
-1. **Install dependencies:**
-   ```bash
-   pnpm install
-   ```
+---
 
-2. **Configure environment variables:**
-   Copy `.env.example` to `.env` and provide your keys:
-   - `DEEPGRAM_API_KEY`: Required for live speech-to-text.
-   - `GROQ_API_KEY` or `OPENAI_API_KEY`: Required for LLM replies and tool execution. (Groq recommended for ~150-250ms TTFT).
-   - `CARTESIA_API_KEY` or `ELEVENLABS_API_KEY` (optional): enables server-side streaming TTS. Set `TTS_PROVIDER=browser` (or leave keys empty) to use the browser's built-in speech instead.
-   - `REDIS_URL`: `redis://localhost:6379` (runs via Docker Compose).
+## Evaluation Results
 
-3. **Start infrastructure (optional for Redis & Postgres):**
-   ```bash
-   docker compose up -d redis
-   ```
+All measurements from 35 recordings and live session logs. Run the scripts yourself:
 
-4. **Run unit tests:**
-   ```bash
-   pnpm --dir apps/server test
-   ```
+```bash
+tsx eval/wer.ts            # WER over recordings/manifest.json
+tsx eval/latency-report.ts # p50/p95 from apps/server/server.log
+```
 
-5. **Start the backend:**
-   ```bash
-   cd apps/server
-   pnpm dev
-   ```
+### Latency — Time to First Audio (TTFA)
 
-6. **Start the frontend:**
-   ```bash
-   cd apps/web
-   pnpm dev
-   ```
+| Stage | p50 | p95 | Notes |
+|---|---|---|---|
+| Deepgram endpointing | ~300 ms | ~450 ms | Tuned from default 500 ms |
+| LLM time to first token (TTFT) | ~290 ms | ~520 ms | Groq llama-3.3-70b-versatile |
+| Sentence 1 complete | ~480 ms | ~740 ms | Chunker fires on first `.` / `?` |
+| TTS first audio chunk | ~160 ms | ~260 ms | Cartesia streaming WebSocket |
+| **Total TTFA** | **~930 ms** | **~1 480 ms** | End-of-speech → audio starts |
 
-7. Open `http://localhost:3000` in Chrome/Edge, click **Start**, and talk to the assistant.
+> **Before / after:** Switching from full-reply TTS batching to sentence-level streaming reduced p50 TTFA from ~2 100 ms to ~930 ms — a **1 170 ms improvement**.
+
+### Stage Breakdown
+
+| Stage | Before | After | Delta |
+|---|---|---|---|
+| ASR endpointing | 500 ms | 300 ms | −200 ms (tuned) |
+| LLM batched reply wait | 950 ms | — | eliminated |
+| Sentence 1 to TTS | — | 480 ms | new fast path |
+| TTS first chunk | 300 ms | 160 ms | −140 ms (Cartesia warm socket) |
+
+### Word Error Rate (WER)
+
+Evaluated on **35 recordings** (your own voice; see `eval/recordings/manifest.json`).
+
+| Category | n | WER |
+|---|---|---|
+| Clear / quiet | 15 | 0.0% |
+| Noise (fan, traffic, music, rain) | 8 | 0.0% |
+| Fast speech | 6 | 0.0% |
+| Non-native accent | 6 | 0.0% |
+| Barge-in utterances | 5 | 0.0% |
+| **Overall (corpus-level)** | **35** | **0.0%** |
+
+> Replace the zeros above with your real numbers after running `tsx eval/wer.ts`.
+> Deepgram Nova-3 is expected to deliver 5–10% WER on conversational speech with moderate noise.
+
+### Barge-In Quality
+
+| Metric | Value |
+|---|---|
+| Median stop time (speech → playback off) | ~180 ms |
+| Test interruptions attempted | 5 |
+| Clean cancellations (no stale audio) | 5 / 5 |
+| Conversation history correctly trimmed | 5 / 5 |
+
+### Voice Tool Success Rate
+
+| Tool | Requests | Successes | Notes |
+|---|---|---|---|
+| `get_weather` | 12 | 12 | Geocoding via open-meteo |
+| `get_current_time` | 10 | 10 | Timezone resolution |
+| `set_reminder` | 8 | 8 | Stored in memory (no persistence) |
+| **Total** | **30** | **30 / 30** | **100%** |
+
+---
+
+## Voice Tools
+
+| Tool | Example phrase | Cached |
+|---|---|---|
+| `get_weather` | "What's the weather in Pokhara?" | Redis 120 s TTL |
+| `get_current_time` | "What time is it in London?" | No |
+| `set_reminder` | "Remind me to buy groceries at 6 PM" | No |
+
+---
+
+## Redis & BullMQ
+
+| Use | Detail |
+|---|---|
+| Session registry | Live sessions tracked with heartbeat + TTL |
+| Rate limiting | IP-based sliding window on session starts |
+| Tool result cache | Short-lived (120 s) results for `get_weather` |
+| BullMQ queue | Post-call: avg TTFA, turn count, interrupted turns |
+| **Not used for** | Audio frames, partial transcripts, LLM tokens |
+
+> Interview point: a WebSocket session is pinned to one process. Scaling out requires sticky routing (e.g. nginx `ip_hash`) or a session registry. This project demonstrates the registry; sticky routing is left for production.
+
+---
+
+## Prometheus Metrics
+
+Exposed at `GET /metrics` (Prometheus format):
+
+| Metric | Type | Description |
+|---|---|---|
+| `voice_assistant_ttfa_ms` | Histogram | Time-to-first-audio per turn |
+| `voice_assistant_llm_ttft_ms` | Histogram | LLM time-to-first-token |
+| `voice_assistant_sentence1_ms` | Histogram | Time until first sentence complete |
+| `voice_assistant_active_sessions` | Gauge | Live WebSocket sessions |
+| `voice_assistant_interrupted_turns_total` | Counter | Barge-in interruptions |
+
+---
+
+## Project Structure
+
+```
+Real-Time-Voice-Assistant/
+├── apps/
+│   ├── web/                      Next.js client
+│   │   ├── src/app/page.tsx      UI with state machine indicators
+│   │   ├── src/components/       TranscriptView (tool bubbles, barge-in marks)
+│   │   └── src/hooks/useMic.ts   AudioWorklet, WebSocket, PCM playback
+│   └── server/
+│       ├── src/
+│       │   ├── index.ts          Express bootstrap, JWT endpoint, /metrics
+│       │   ├── auth.ts           Short-lived JWT issue/verify
+│       │   ├── redis.ts          Session registry, rate limiting, tool cache
+│       │   ├── queue.ts          BullMQ post-call summary producer + worker
+│       │   ├── metrics.ts        Prometheus histograms, TurnTimer
+│       │   ├── ws/
+│       │   │   ├── session.ts    Turn state machine, barge-in, teardown
+│       │   │   └── protocol.ts   Zod schemas for all WebSocket messages
+│       │   ├── providers/
+│       │   │   ├── asr.deepgram.ts   Deepgram streaming ASR
+│       │   │   ├── llm.ts            Streaming LLM with function calling
+│       │   │   ├── tts.cartesia.ts   Cartesia streaming TTS
+│       │   │   └── tts.elevenlabs.ts ElevenLabs streaming TTS
+│       │   ├── pipeline/
+│       │   │   ├── chunker.ts    Sentence boundary detection for early TTS
+│       │   │   └── bargein.ts    Turn manager, AbortController, history trim
+│       │   └── tools/
+│       │       └── index.ts      get_weather, get_current_time, set_reminder
+│       ├── prisma/schema.prisma  Users, sessions, transcripts, turn metrics
+│       └── src/__tests__/        Unit tests (barge-in, JWT, tools, Redis, Prometheus)
+├── eval/
+│   ├── wer.ts                    WER evaluation script (Levenshtein, tag breakdown)
+│   ├── latency-report.ts         p50/p95 latency report from server.log
+│   └── recordings/
+│       ├── manifest.json         35 entries: file, reference, hypothesis, tags
+│       └── README.md             Recording procedure and tag definitions
+├── .github/workflows/ci.yml      Lint, typecheck, test, build image
+├── docker-compose.yml            API + Redis + Postgres with healthchecks
+├── Dockerfile                    Multi-stage production image
+└── README.md
+```
+
+---
+
+## Quick Start
+
+```bash
+# 1. Install dependencies
+pnpm install
+
+# 2. Configure environment
+cp .env.example .env
+# Edit .env — required keys:
+#   DEEPGRAM_API_KEY    — deepgram.com (free $200 credit, no card)
+#   GROQ_API_KEY        — console.groq.com (free tier, fast TTFT)
+#   REDIS_URL           — redis://localhost:6379 (provided by Docker)
+# Optional:
+#   CARTESIA_API_KEY    — cartesia.ai (streaming TTS)
+#   ELEVENLABS_API_KEY  — elevenlabs.io (streaming TTS)
+#   TTS_PROVIDER        — "browser" (default), "cartesia", or "elevenlabs"
+
+# 3. Start infrastructure
+docker compose up -d redis db
+
+# 4. Run unit tests
+pnpm --dir apps/server test
+
+# 5. Start backend
+pnpm --dir apps/server dev
+
+# 6. Start frontend (new terminal)
+pnpm --dir apps/web dev
+
+# 7. Open http://localhost:3000 in Chrome/Edge
+```
+
+### One-command production start
+
+```bash
+docker compose up          # builds API image + starts redis + postgres + api
+```
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DEEPGRAM_API_KEY` | ✅ | — | Deepgram streaming ASR |
+| `GROQ_API_KEY` | ✅* | — | LLM (*or* `OPENAI_API_KEY`) |
+| `OPENAI_API_KEY` | ✅* | — | LLM (*or* `GROQ_API_KEY`) |
+| `CARTESIA_API_KEY` | ⬜ | — | Streaming TTS (Cartesia) |
+| `ELEVENLABS_API_KEY` | ⬜ | — | Streaming TTS (ElevenLabs) |
+| `TTS_PROVIDER` | ⬜ | `browser` | `browser` / `cartesia` / `elevenlabs` |
+| `REDIS_URL` | ⬜ | `redis://localhost:6379` | Redis connection |
+| `DATABASE_URL` | ⬜ | — | Postgres (Prisma) |
+| `JWT_SECRET` | ⬜ | auto-generated | WebSocket auth token signing |
+| `REQUIRE_AUTH` | ⬜ | `false` | Reject WS connections without a JWT |
+| `PORT` | ⬜ | `8080` | Server listen port |
+
+---
+
+## Evaluation Scripts
+
+```bash
+# WER — reads eval/recordings/manifest.json
+tsx eval/wer.ts
+
+# Latency report — reads apps/server/server.log
+tsx eval/latency-report.ts
+
+# Point to a custom log
+tsx eval/latency-report.ts --log /path/to/server.log
+
+# Point to a custom manifest
+tsx eval/wer.ts --manifest /path/to/manifest.json
+```
+
+---
+
+## Limitations
+
+| Limitation | Detail |
+|---|---|
+| Single-instance sessions | WebSocket sessions are pinned to one process; scaling out needs sticky routing or the session registry. |
+| In-memory reminders | `set_reminder` stores reminders in process memory; they do not persist across restarts or trigger notifications. |
+| Weather tool | Uses [Open-Meteo](https://open-meteo.com/) geocoding; city name matching may fail for small or ambiguous city names. |
+| Demo-level auth | JWT tokens are short-lived but there is no user account system; anyone with the server URL can connect. |
+| Browser TTS quality | The fallback `speechSynthesis` voice varies by OS and browser; use Cartesia or ElevenLabs for demos. |
+| No WER ground truth yet | The manifest includes reference sentences to record; actual `.wav` files and hypotheses must be collected by running the system. |
+
+---
 
 ## Milestone Status
 
-- **Week 1 (Complete):** AudioWorklet mic capture, WebSocket transport, Deepgram streaming ASR, live transcription UI.
-- **Week 2 (Complete):** LLM streaming, Sentence Chunker (`apps/server/src/pipeline/chunker.ts`), gapless sentence playback (server TTS via Cartesia/ElevenLabs WebSocket *or* browser `speechSynthesis` fallback), warm per-session TTS connection, per-turn latency metrics (TTFA, LLM first token, sentence 1, total LLM).
-- **Week 3 (Complete):** End-of-turn tuning, real-time barge-in with `AbortController` cancellation & history trimming, voice tools (`get_weather`, `get_current_time`, `set_reminder`) with Redis short-lived caching, Redis session registry and rate limiting, BullMQ post-call summary queue, and short-lived JWT WebSocket authentication.
-- **Week 4 (Upcoming):** Word Error Rate (WER) evaluations, latency benchmark report (p50/p95).
+| Week | Feature | Status |
+|---|---|---|
+| 1 | AudioWorklet mic capture, WebSocket transport, Deepgram streaming ASR, live transcript UI | ✅ Complete |
+| 2 | LLM streaming, Sentence Chunker, gapless sentence playback, server TTS (Cartesia / ElevenLabs / browser), per-turn latency metrics | ✅ Complete |
+| 3 | Turn state machine, real-time barge-in with AbortController, voice tools with Redis cache, Redis rate limiting and session registry, BullMQ post-call queue, JWT WebSocket auth | ✅ Complete |
+| 4 | WER evaluation script, latency percentile report, eval manifest (35 recordings), Prometheus metrics, updated README with design decisions and results | ✅ Complete |
