@@ -32,6 +32,7 @@ jobs:
 
       - name: Typecheck backend & frontend
         run: |
+          pnpm --dir packages/shared typecheck
           pnpm --dir apps/server typecheck
           pnpm --dir apps/web typecheck
 
