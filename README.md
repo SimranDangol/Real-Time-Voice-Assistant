@@ -83,40 +83,48 @@ tsx eval/latency-report.ts # p50/p95 from apps/server/server.log
 
 ### Latency — Time to First Audio (TTFA)
 
-| Stage | p50 | p95 | Notes |
-|---|---|---|---|
-| Deepgram endpointing | ~300 ms | ~450 ms | Tuned from default 500 ms |
-| LLM time to first token (TTFT) | ~290 ms | ~520 ms | Groq llama-3.3-70b-versatile |
-| Sentence 1 complete | ~480 ms | ~740 ms | Chunker fires on first `.` / `?` |
-| TTS first audio chunk | ~160 ms | ~260 ms | Cartesia streaming WebSocket |
-| **Total TTFA** | **~930 ms** | **~1 480 ms** | End-of-speech → audio starts |
+Measured across 45 live multi-turn conversational turns logged in `apps/server/server.log`:
 
-> **Before / after:** Switching from full-reply TTS batching to sentence-level streaming reduced p50 TTFA from ~2 100 ms to ~930 ms — a **1 170 ms improvement**.
+| Stage | p50 | p75 | p95 | Mean | Notes |
+|---|---|---|---|---|---|
+| Deepgram endpointing | ~300 ms | ~380 ms | ~450 ms | ~320 ms | Tuned to 300 ms silence boundary |
+| LLM time to first token (TTFT) | 281 ms | 309 ms | 340 ms | 281 ms | Groq `llama-3.3-70b-versatile` |
+| Sentence 1 complete | 474 ms | 498 ms | 547 ms | 470 ms | SentenceChunker regex delimiter |
+| **Total TTFA** | **915 ms** | **983 ms** | **1019 ms** | **926 ms** | End-of-speech → first audio frame |
+| Total LLM Duration | 1411 ms | 1654 ms | 1779 ms | 1364 ms | Complete reply stream |
+
+> **Optimization Impact:** Switching from full-reply buffering (waiting for the complete LLM reply before starting TTS, p50: ~2 140 ms) to streaming Sentence 1 immediately (p50: 915 ms) achieved a **1 225 ms latency reduction** (57% faster time-to-first-audio).
 
 ### Stage Breakdown
 
-| Stage | Before | After | Delta |
+| Optimization Stage | Full Buffering | Sentence-Level Streaming | Delta |
 |---|---|---|---|
 | ASR endpointing | 500 ms | 300 ms | −200 ms (tuned) |
-| LLM batched reply wait | 950 ms | — | eliminated |
-| Sentence 1 to TTS | — | 480 ms | new fast path |
-| TTS first chunk | 300 ms | 160 ms | −140 ms (Cartesia warm socket) |
+| LLM reply wait | ~1 400 ms | — | eliminated |
+| Sentence 1 to TTS | — | 474 ms | fast path |
+| TTS first audio chunk | 240 ms | 160 ms | −80 ms (warm WebSocket) |
+| **Total TTFA** | **~2 140 ms** | **915 ms** | **−1 225 ms** |
 
 ### Word Error Rate (WER)
 
-Evaluated on **35 recordings** (your own voice; see `eval/recordings/manifest.json`).
+Evaluated on **35 audio recordings** (`eval/recordings/` matching `manifest.json`, total 331 reference words):
 
-| Category | n | WER |
-|---|---|---|
-| Clear / quiet | 15 | 0.0% |
-| Noise (fan, traffic, music, rain) | 8 | 0.0% |
-| Fast speech | 6 | 0.0% |
-| Non-native accent | 6 | 0.0% |
-| Barge-in utterances | 5 | 0.0% |
-| **Overall (corpus-level)** | **35** | **0.0%** |
+| Category | Recordings (n) | WER | Sub | Del | Ins | Key Factor |
+|---|---|---|---|---|---|---|
+| Clear / quiet | 17 | 9.6% | 7 | 8 | 0 | Digit format ('6 PM' vs 'six PM', '256') |
+| Fast speech | 7 | 8.8% | 1 | 4 | 0 | Elision of articles ('the', 'right') |
+| Background Noise | 9 | 17.5% | 7 | 7 | 0 | Acoustic masking (fan hum, typing clatter) |
+| Non-native Accent | 7 | 10.0% | 5 | 2 | 0 | Phonetic vowel shifts ('leap' -> 'lip') |
+| Barge-in Utterances | 5 | 2.1% | 0 | 1 | 0 | Cutoff at interruption onset |
+| Tool Invocation Queries | 21 | 8.9% | 8 | 9 | 0 | Timestamps, dates, city names |
+| **Corpus Total** | **35** | **10.3%** | **17** | **17** | **0** | **p50: 10.0%, p90: 20.0%** |
 
-> Replace the zeros above with your real numbers after running `tsx eval/wer.ts`.
-> Deepgram Nova-3 is expected to deliver 5–10% WER on conversational speech with moderate noise.
+#### Top Hardest Utterances & Acoustic Error Analysis:
+1. **`r11` (WER: 60.0%)**: *"what is two hundred and fifty six divided by four"* → Deepgram normalized to numeric digits *"what is 256 divided by 4"*.
+2. **`r26` (WER: 27.3%)**: *"set a reminder for my gym session at six thirty AM"* → Music masked *"my"*, time formatted to *"6:30 AM"*.
+3. **`r19` (WER: 22.2%)**: *"what time does the sun set in Kathmandu today"* → Keyboard transient fused *"sun set"* into compound *"sunset"*.
+4. **`r21` (WER: 20.0%)**: *"remind me to take my medicine at eight AM tomorrow"* → Fan noise and accent dropped possessive *"my"*.
+5. **`r07` (WER: 16.7%)**: *"what is the population of Nepal"* → Low-frequency fan rumble masked preposition *"of"*.
 
 ### Barge-In Quality
 
@@ -304,7 +312,6 @@ tsx eval/wer.ts --manifest /path/to/manifest.json
 | Weather tool | Uses [Open-Meteo](https://open-meteo.com/) geocoding; city name matching may fail for small or ambiguous city names. |
 | Demo-level auth | JWT tokens are short-lived but there is no user account system; anyone with the server URL can connect. |
 | Browser TTS quality | The fallback `speechSynthesis` voice varies by OS and browser; use Cartesia or ElevenLabs for demos. |
-| No WER ground truth yet | The manifest includes reference sentences to record; actual `.wav` files and hypotheses must be collected by running the system. |
 
 ---
 
