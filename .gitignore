@@ -7,3 +7,9 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# Eval audio recordings (large binary files — store separately)
+eval/recordings/*.wav
+eval/recordings/*.mp3
+eval/recordings/*.ogg
+eval/recordings/*.m4a
