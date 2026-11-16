@@ -132,13 +132,25 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
       send(socket, { type: "interrupted", turnId: interruptedTurnId });
 
       if (currentTurn) {
+        const turnMetrics = currentTurn.timer.getMetrics();
+        log.info(
+          {
+            turnId: interruptedTurnId,
+            ttfaMs: turnMetrics.ttfaMs,
+            llmFirstTokenMs: turnMetrics.llmFirstTokenMs,
+            sentence1Ms: turnMetrics.sentence1Ms,
+            totalLlmMs: turnMetrics.totalLlmMs,
+            interrupted: true,
+          },
+          "Turn metrics"
+        );
         sessionTurns.push({
           turnId: interruptedTurnId,
           userText: currentTurn.userText,
           assistantText: interruptInfo?.spokenText ?? "",
-          ttfaMs: currentTurn.timer.getMetrics().ttfaMs,
-          llmFirstTokenMs: currentTurn.timer.getMetrics().llmFirstTokenMs,
-          sentence1Ms: currentTurn.timer.getMetrics().sentence1Ms,
+          ttfaMs: turnMetrics.ttfaMs,
+          llmFirstTokenMs: turnMetrics.llmFirstTokenMs,
+          sentence1Ms: turnMetrics.sentence1Ms,
           interrupted: true,
         });
         currentTurn = null;
@@ -294,7 +306,18 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
 
           activeTurnId = null;
           setState("listening");
-          log.info({ turnId, metrics: finalMetrics }, "Turn complete");
+          log.info(
+            {
+              turnId,
+              ttfaMs: finalMetrics.ttfaMs,
+              llmFirstTokenMs: finalMetrics.llmFirstTokenMs,
+              sentence1Ms: finalMetrics.sentence1Ms,
+              totalLlmMs: finalMetrics.totalLlmMs,
+              interrupted: false,
+              metrics: finalMetrics,
+            },
+            "Turn metrics"
+          );
         },
 
         onError(err) {
