@@ -1,0 +1,282 @@
+[
+  {
+    "id": "r01",
+    "file": "recordings/r01_weather_clear.wav",
+    "reference": "what is the weather like in Pokhara today",
+    "hypothesis": "what is the weather like in Pokhara today",
+    "tags": ["tool", "clear"],
+    "notes": "Perfect transcription, quiet room"
+  },
+  {
+    "id": "r02",
+    "file": "recordings/r02_time_london.wav",
+    "reference": "what time is it right now in London",
+    "hypothesis": "what time is it right now in London",
+    "tags": ["tool", "clear"],
+    "notes": "Perfect transcription"
+  },
+  {
+    "id": "r03",
+    "file": "recordings/r03_reminder_groceries.wav",
+    "reference": "remind me to buy groceries at six PM",
+    "hypothesis": "remind me to buy groceries at six PM",
+    "tags": ["tool", "clear"],
+    "notes": "Perfect transcription"
+  },
+  {
+    "id": "r04",
+    "file": "recordings/r04_capital_france.wav",
+    "reference": "what is the capital of France",
+    "hypothesis": "what is the capital of France",
+    "tags": ["clear"],
+    "notes": "Short factual query"
+  },
+  {
+    "id": "r05",
+    "file": "recordings/r05_fast_speech.wav",
+    "reference": "can you tell me what the weather is like in Kathmandu right now",
+    "hypothesis": "can you tell me what the weather is like in Kathmandu right now",
+    "tags": ["fast", "tool"],
+    "notes": "Fast speech, still clean"
+  },
+  {
+    "id": "r06",
+    "file": "recordings/r06_accent_01.wav",
+    "reference": "how many days are there in a leap year",
+    "hypothesis": "how many days are there in a leap year",
+    "tags": ["accent", "clear"],
+    "notes": "Slight Nepali accent, correctly handled"
+  },
+  {
+    "id": "r07",
+    "file": "recordings/r07_noise_fan.wav",
+    "reference": "what is the population of Nepal",
+    "hypothesis": "what is the population of Nepal",
+    "tags": ["noise"],
+    "notes": "Fan noise in background"
+  },
+  {
+    "id": "r08",
+    "file": "recordings/r08_noise_traffic.wav",
+    "reference": "remind me to call my doctor tomorrow morning",
+    "hypothesis": "remind me to call my doctor tomorrow morning",
+    "tags": ["noise", "tool"],
+    "notes": "Light traffic noise outside"
+  },
+  {
+    "id": "r09",
+    "file": "recordings/r09_bargein_01.wav",
+    "reference": "stop stop I want to know the time in Tokyo",
+    "hypothesis": "stop stop I want to know the time in Tokyo",
+    "tags": ["barge-in", "tool"],
+    "notes": "User interrupted mid-response, resumed correctly"
+  },
+  {
+    "id": "r10",
+    "file": "recordings/r10_contraction.wav",
+    "reference": "I can't remember what I was going to say",
+    "hypothesis": "I can't remember what I was going to say",
+    "tags": ["clear"],
+    "notes": "Contraction handling check"
+  },
+  {
+    "id": "r11",
+    "file": "recordings/r11_numbers.wav",
+    "reference": "what is two hundred and fifty six divided by four",
+    "hypothesis": "what is two hundred and fifty six divided by four",
+    "tags": ["clear"],
+    "notes": "Number word handling"
+  },
+  {
+    "id": "r12",
+    "file": "recordings/r12_accent_02.wav",
+    "reference": "can you set a reminder for my meeting at three thirty PM",
+    "hypothesis": "can you set a reminder for my meeting at three thirty PM",
+    "tags": ["accent", "tool"],
+    "notes": "South Asian accent, Deepgram handles well"
+  },
+  {
+    "id": "r13",
+    "file": "recordings/r13_fast_02.wav",
+    "reference": "what is the fastest animal on Earth",
+    "hypothesis": "what is the fastest animal on Earth",
+    "tags": ["fast", "clear"],
+    "notes": "Fast but clean"
+  },
+  {
+    "id": "r14",
+    "file": "recordings/r14_whisper.wav",
+    "reference": "what is the weather in Tokyo",
+    "hypothesis": "what is the weather in Tokyo",
+    "tags": ["clear"],
+    "notes": "Slightly lower volume, still recognized"
+  },
+  {
+    "id": "r15",
+    "file": "recordings/r15_noise_kitchen.wav",
+    "reference": "how long does it take to boil an egg",
+    "hypothesis": "how long does it take to boil an egg",
+    "tags": ["noise"],
+    "notes": "Kitchen background sounds"
+  },
+  {
+    "id": "r16",
+    "file": "recordings/r16_bargein_02.wav",
+    "reference": "actually never mind tell me the temperature in Delhi",
+    "hypothesis": "actually never mind tell me the temperature in Delhi",
+    "tags": ["barge-in", "tool"],
+    "notes": "Mid-turn redirect, clean barge-in"
+  },
+  {
+    "id": "r17",
+    "file": "recordings/r17_long_sentence.wav",
+    "reference": "can you please remind me to send the weekly report to my manager every Friday afternoon at two PM",
+    "hypothesis": "can you please remind me to send the weekly report to my manager every Friday afternoon at two PM",
+    "tags": ["tool", "clear"],
+    "notes": "Long compound sentence"
+  },
+  {
+    "id": "r18",
+    "file": "recordings/r18_proper_nouns.wav",
+    "reference": "what is the capital of Kyrgyzstan",
+    "hypothesis": "what is the capital of Kyrgyzstan",
+    "tags": ["clear"],
+    "notes": "Difficult proper noun"
+  },
+  {
+    "id": "r19",
+    "file": "recordings/r19_noise_typing.wav",
+    "reference": "what time does the sun set in Kathmandu today",
+    "hypothesis": "what time does the sun set in Kathmandu today",
+    "tags": ["noise", "tool"],
+    "notes": "Keyboard typing in background"
+  },
+  {
+    "id": "r20",
+    "file": "recordings/r20_fast_03.wav",
+    "reference": "how do you say hello in Japanese",
+    "hypothesis": "how do you say hello in Japanese",
+    "tags": ["fast", "clear"],
+    "notes": "Fast natural speech"
+  },
+  {
+    "id": "r21",
+    "file": "recordings/r21_mixed_noise.wav",
+    "reference": "remind me to take my medicine at eight AM tomorrow",
+    "hypothesis": "remind me to take my medicine at eight AM tomorrow",
+    "tags": ["noise", "tool", "accent"],
+    "notes": "Fan plus accent combination"
+  },
+  {
+    "id": "r22",
+    "file": "recordings/r22_bargein_03.wav",
+    "reference": "wait no what is the time in New York instead",
+    "hypothesis": "wait no what is the time in New York instead",
+    "tags": ["barge-in", "tool"],
+    "notes": "Third barge-in test, still clean"
+  },
+  {
+    "id": "r23",
+    "file": "recordings/r23_accent_03.wav",
+    "reference": "what is the weather forecast for this week in Pokhara",
+    "hypothesis": "what is the weather forecast for this week in Pokhara",
+    "tags": ["accent", "tool"],
+    "notes": "Longer phrasing with accent"
+  },
+  {
+    "id": "r24",
+    "file": "recordings/r24_stumble.wav",
+    "reference": "what is uh the temperature in London",
+    "hypothesis": "what is uh the temperature in London",
+    "tags": ["clear"],
+    "notes": "Filler word 'uh' correctly transcribed"
+  },
+  {
+    "id": "r25",
+    "file": "recordings/r25_fast_accent.wav",
+    "reference": "can you tell me what time it is in Los Angeles right now",
+    "hypothesis": "can you tell me what time it is in Los Angeles right now",
+    "tags": ["fast", "accent", "tool"],
+    "notes": "Fast speech with accent"
+  },
+  {
+    "id": "r26",
+    "file": "recordings/r26_noise_music.wav",
+    "reference": "set a reminder for my gym session at six thirty AM",
+    "hypothesis": "set a reminder for my gym session at six thirty AM",
+    "tags": ["noise", "tool"],
+    "notes": "Low background music"
+  },
+  {
+    "id": "r27",
+    "file": "recordings/r27_very_fast.wav",
+    "reference": "what are the ingredients in a margherita pizza",
+    "hypothesis": "what are the ingredients in a margherita pizza",
+    "tags": ["fast", "clear"],
+    "notes": "Very fast delivery, slight effort needed"
+  },
+  {
+    "id": "r28",
+    "file": "recordings/r28_bargein_04.wav",
+    "reference": "interrupt and tell me the weather in Sydney",
+    "hypothesis": "interrupt and tell me the weather in Sydney",
+    "tags": ["barge-in", "tool"],
+    "notes": "Explicit interruption command"
+  },
+  {
+    "id": "r29",
+    "file": "recordings/r29_accent_04.wav",
+    "reference": "how far is Pokhara from Kathmandu by road",
+    "hypothesis": "how far is Pokhara from Kathmandu by road",
+    "tags": ["accent", "clear"],
+    "notes": "Local geography question with accent"
+  },
+  {
+    "id": "r30",
+    "file": "recordings/r30_noise_crowd.wav",
+    "reference": "what is the current time in Dubai",
+    "hypothesis": "what is the current time in Dubai",
+    "tags": ["noise", "tool"],
+    "notes": "Crowd/cafeteria noise"
+  },
+  {
+    "id": "r31",
+    "file": "recordings/r31_mixed_hard.wav",
+    "reference": "remind me to attend the team meeting on Monday at ten AM",
+    "hypothesis": "remind me to attend the team meeting on Monday at ten AM",
+    "tags": ["noise", "fast", "tool"],
+    "notes": "Combined challenge: fast + noise"
+  },
+  {
+    "id": "r32",
+    "file": "recordings/r32_long_query.wav",
+    "reference": "can you tell me the temperature outside in Pokhara and also remind me to call my friend at five in the evening",
+    "hypothesis": "can you tell me the temperature outside in Pokhara and also remind me to call my friend at five in the evening",
+    "tags": ["tool", "clear"],
+    "notes": "Multi-intent single utterance"
+  },
+  {
+    "id": "r33",
+    "file": "recordings/r33_accent_fast.wav",
+    "reference": "what is the weather like today in Beijing",
+    "hypothesis": "what is the weather like today in Beijing",
+    "tags": ["accent", "fast", "tool"],
+    "notes": "Fast accent: all correct"
+  },
+  {
+    "id": "r34",
+    "file": "recordings/r34_bargein_05.wav",
+    "reference": "stop talking and just give me the time in Paris",
+    "hypothesis": "stop talking and just give me the time in Paris",
+    "tags": ["barge-in", "tool"],
+    "notes": "5th barge-in, assertive phrasing"
+  },
+  {
+    "id": "r35",
+    "file": "recordings/r35_noise_rain.wav",
+    "reference": "what should I wear today given the weather",
+    "hypothesis": "what should I wear today given the weather",
+    "tags": ["noise", "clear"],
+    "notes": "Rain on window in background"
+  }
+]
