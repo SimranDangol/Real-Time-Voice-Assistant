@@ -32,6 +32,12 @@ interface TurnMetricsLogLine {
   sentence1Ms?: number | null;
   totalLlmMs?: number | null;
   interrupted?: boolean;
+  metrics?: {
+    ttfaMs?: number | null;
+    llmFirstTokenMs?: number | null;
+    sentence1Ms?: number | null;
+    totalLlmMs?: number | null;
+  };
   msg?: string;
 }
 
@@ -77,13 +83,25 @@ async function parseLogs(logPath: string): Promise<TurnMetricsLogLine[]> {
     if (!line) continue;
     try {
       const parsed = JSON.parse(line) as TurnMetricsLogLine;
-      // Accept lines that have at least one latency field
+      const ttfa = typeof parsed.ttfaMs === "number" ? parsed.ttfaMs : parsed.metrics?.ttfaMs;
+      const ttft = typeof parsed.llmFirstTokenMs === "number" ? parsed.llmFirstTokenMs : parsed.metrics?.llmFirstTokenMs;
+      const sent1 = typeof parsed.sentence1Ms === "number" ? parsed.sentence1Ms : parsed.metrics?.sentence1Ms;
+      const total = typeof parsed.totalLlmMs === "number" ? parsed.totalLlmMs : parsed.metrics?.totalLlmMs;
+      const isInterrupted = parsed.interrupted ?? (parsed.msg?.includes("interrupted") || false);
+
       if (
-        typeof parsed.ttfaMs === "number" ||
-        typeof parsed.llmFirstTokenMs === "number" ||
-        typeof parsed.sentence1Ms === "number"
+        typeof ttfa === "number" ||
+        typeof ttft === "number" ||
+        typeof sent1 === "number"
       ) {
-        lines.push(parsed);
+        lines.push({
+          ...parsed,
+          ttfaMs: ttfa,
+          llmFirstTokenMs: ttft,
+          sentence1Ms: sent1,
+          totalLlmMs: total,
+          interrupted: isInterrupted,
+        });
       }
     } catch {
       // Not JSON — skip (plain text log lines)

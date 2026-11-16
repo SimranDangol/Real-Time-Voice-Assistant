@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "wer": "tsx wer.ts",
-    "latency": "tsx latency-report.ts"
+    "latency": "tsx latency-report.ts",
+    "generate:audio": "tsx generate-audio.ts",
+    "generate:logs": "tsx generate-logs.ts"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",
