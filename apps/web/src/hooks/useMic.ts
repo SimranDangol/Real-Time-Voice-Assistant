@@ -52,6 +52,7 @@ type ServerMessage =
 export function useMic() {
   const [isListening, setIsListening] = useState(false);
   const [assistantState, setAssistantState] = useState<AssistantState>("idle");
+  const assistantStateRef = useRef<AssistantState>("idle");
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [metrics, setMetrics] = useState<LatencyMetrics | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -171,6 +172,7 @@ export function useMic() {
 
       if (msg.type === "state") {
         setAssistantState(msg.state);
+        assistantStateRef.current = msg.state;
       }
 
       if (msg.type === "transcript.partial") {
@@ -368,6 +370,7 @@ export function useMic() {
           const isAssistantSpeaking =
             isPlayingRef.current ||
             activeSourcesRef.current.size > 0 ||
+            assistantStateRef.current === "speaking" ||
             (typeof window !== "undefined" && Boolean(window.speechSynthesis?.speaking));
 
           if (!headphonesModeRef.current && isAssistantSpeaking) {
@@ -455,6 +458,7 @@ export function useMic() {
     pcmTurnIdRef.current = null;
     setIsListening(false);
     setAssistantState("idle");
+    assistantStateRef.current = "idle";
   }
 
   return {
