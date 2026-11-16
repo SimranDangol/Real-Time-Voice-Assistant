@@ -17,6 +17,9 @@ import { issueToken, verifyToken } from "./auth.js";
 import { initQueue, closeQueue } from "./queue.js";
 import { closeRedis } from "./redis.js";
 import { prometheusRegistry } from "./metrics.js";
+import { closeDatabase, connectDatabase, startRetentionCleanup } from "./db.js";
+import { captureError, flushErrorReporting, initErrorReporting } from "./sentry.js";
+import { getTimeoutMs } from "./providers/request.js";
 
 const app = express();
 
@@ -62,9 +65,6 @@ const server = http.createServer(app);
 
 const wss = new WebSocketServer({ server, path: "/ws" });
 
-// Initialize background BullMQ queue for post-call jobs
-initQueue();
-
 wss.on("connection", (socket, req) => {
   const ip = req.socket.remoteAddress ?? "unknown";
 
@@ -94,8 +94,30 @@ wss.on("connection", (socket, req) => {
 // ── Start ─────────────────────────────────────────────────────────────────────
 const port = Number(process.env.PORT ?? 8080);
 
-server.listen(port, () => {
-  logger.info(`Server listening on http://localhost:${port}`);
+async function startServer(): Promise<void> {
+  initErrorReporting();
+  getTimeoutMs("ASR_CONNECT_TIMEOUT_MS", 10_000);
+  getTimeoutMs("LLM_REQUEST_TIMEOUT_MS", 30_000);
+  getTimeoutMs("TOOL_REQUEST_TIMEOUT_MS", 10_000);
+  getTimeoutMs("TTS_CONNECT_TIMEOUT_MS", 10_000);
+  getTimeoutMs("TTS_RESPONSE_TIMEOUT_MS", 15_000);
+  const ttsStreamingMode = process.env.TTS_STREAMING_MODE ?? "sentence";
+  if (ttsStreamingMode !== "sentence" && ttsStreamingMode !== "buffered") {
+    throw new Error("TTS_STREAMING_MODE must be 'sentence' or 'buffered'");
+  }
+  await connectDatabase();
+  await startRetentionCleanup();
+  initQueue();
+
+  server.listen(port, () => {
+    logger.info(`Server listening on http://localhost:${port}`);
+  });
+}
+
+void startServer().catch((err) => {
+  logger.fatal({ err }, "Server startup failed");
+  captureError(err, { component: "startup" });
+  process.exitCode = 1;
 });
 
 // ── Graceful shutdown ─────────────────────────────────────────────────────────
@@ -105,6 +127,8 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     wss.close();
     await closeQueue();
     await closeRedis();
+    await closeDatabase();
+    await flushErrorReporting();
     server.close(() => process.exit(0));
   });
 }

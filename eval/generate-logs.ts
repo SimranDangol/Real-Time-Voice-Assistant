@@ -3,10 +3,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const serverLogPath = path.resolve(__dirname, "../apps/server/server.log");
+const fixtureLogPath = path.join(__dirname, "fixtures", "synthetic-latency.jsonl");
 
-// Ensure directory exists
-fs.mkdirSync(path.dirname(serverLogPath), { recursive: true });
+fs.mkdirSync(path.dirname(fixtureLogPath), { recursive: true });
 
 interface TurnEntry {
   level: number;
@@ -21,9 +20,10 @@ interface TurnEntry {
   totalLlmMs: number | null;
   interrupted: boolean;
   msg: string;
+  synthetic: boolean;
 }
 
-// 45 sample turns across 5 real conversational sessions
+// Randomized sample turns for latency-report parser checks only.
 const sessions = [
   { id: "sess-9a4f-01", turns: 10, interrupts: [4, 9] },
   { id: "sess-9a4f-02", turns: 8,  interrupts: [3] },
@@ -51,9 +51,10 @@ for (const sess of sessions) {
       level: 30,
       time: baseTime,
       pid: 14220,
-      hostname: "voice-assistant-core",
+      hostname: "synthetic-fixture",
       sessionId: sess.id,
       msg: "Session connected",
+      synthetic: true,
     })
   );
 
@@ -71,7 +72,7 @@ for (const sess of sessions) {
       level: 30,
       time: baseTime,
       pid: 14220,
-      hostname: "voice-assistant-core",
+      hostname: "synthetic-fixture",
       sessionId: sess.id,
       turnId,
       ttfaMs: ttfa,
@@ -80,6 +81,7 @@ for (const sess of sessions) {
       totalLlmMs: totalLlm,
       interrupted: isInterrupted,
       msg: isInterrupted ? "Turn metrics (interrupted)" : "Turn metrics",
+      synthetic: true,
     };
 
     logLines.push(JSON.stringify(entry));
@@ -91,12 +93,13 @@ for (const sess of sessions) {
       level: 30,
       time: baseTime + 5000,
       pid: 14220,
-      hostname: "voice-assistant-core",
+      hostname: "synthetic-fixture",
       sessionId: sess.id,
       msg: "Session disconnected",
+      synthetic: true,
     })
   );
 }
 
-fs.writeFileSync(serverLogPath, logLines.join("\n") + "\n", { encoding: "utf-8" });
-console.log(`Populated ${logLines.length} structured log lines into ${serverLogPath}`);
+fs.writeFileSync(fixtureLogPath, logLines.join("\n") + "\n", { encoding: "utf-8" });
+console.log(`Wrote ${logLines.length} synthetic fixture lines to ${fixtureLogPath}`);

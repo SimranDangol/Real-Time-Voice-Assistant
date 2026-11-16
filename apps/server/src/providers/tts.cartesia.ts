@@ -1,5 +1,6 @@
 import WebSocket from "ws";
 import type { Logger } from "pino";
+import { getTimeoutMs } from "./request.js";
 
 export interface CartesiaTTSCallbacks {
   onAudioChunk: (chunk: Buffer) => void;
@@ -25,10 +26,26 @@ export function createCartesiaTTS(
   voiceId = "a0e99841-438c-4a64-b679-ae501e7d6091" // Standard friendly conversational voice
 ): CartesiaTTSHandle {
   const wsUrl = `wss://api.cartesia.ai/tts/websocket?api_key=${apiKey}&cartesia_version=2024-06-10`;
-  const ws = new WebSocket(wsUrl);
+  const ws = new WebSocket(wsUrl, {
+    handshakeTimeout: getTimeoutMs("TTS_CONNECT_TIMEOUT_MS", 10_000),
+  });
   const queue: Array<{ text: string; isLast: boolean }> = [];
   let isReady = false;
   let isClosed = false;
+  let responseTimeout: NodeJS.Timeout | null = null;
+
+  const clearResponseTimeout = () => {
+    if (responseTimeout) clearTimeout(responseTimeout);
+    responseTimeout = null;
+  };
+  const armResponseTimeout = () => {
+    clearResponseTimeout();
+    responseTimeout = setTimeout(() => {
+      const error = new Error("Cartesia TTS timed out waiting for audio");
+      callbacks.onError(error);
+      ws.terminate();
+    }, getTimeoutMs("TTS_RESPONSE_TIMEOUT_MS", 15_000));
+  };
 
   ws.on("open", () => {
     isReady = true;
@@ -43,26 +60,33 @@ export function createCartesiaTTS(
     try {
       const message = JSON.parse(data.toString());
       if (message.data) {
+        clearResponseTimeout();
         const audioBuffer = Buffer.from(message.data, "base64");
         callbacks.onAudioChunk(audioBuffer);
+        if (!message.done) armResponseTimeout();
       }
       if (message.done) {
+        clearResponseTimeout();
         callbacks.onDone();
       }
     } catch {
       // In case binary frames are received directly
       if (Buffer.isBuffer(data)) {
+        clearResponseTimeout();
         callbacks.onAudioChunk(data);
+        armResponseTimeout();
       }
     }
   });
 
   ws.on("error", (err) => {
-    log.error({ err }, "Cartesia TTS error");
-    callbacks.onError(err instanceof Error ? err : new Error(String(err)));
+    const error = err instanceof Error ? err : new Error("Cartesia TTS connection failed");
+    log.error({ errorName: error.name }, "Cartesia TTS error");
+    callbacks.onError(error);
   });
 
   ws.on("close", () => {
+    clearResponseTimeout();
     log.info("Cartesia TTS closed");
     if (!isClosed) {
       callbacks.onDone();
@@ -87,6 +111,7 @@ export function createCartesiaTTS(
       continue: !isLast,
     };
     ws.send(JSON.stringify(payload));
+    armResponseTimeout();
   }
 
   return {
@@ -101,6 +126,7 @@ export function createCartesiaTTS(
     close() {
       if (isClosed) return;
       isClosed = true;
+      clearResponseTimeout();
       try {
         ws.close();
       } catch {

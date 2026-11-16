@@ -7,8 +7,8 @@
     "wer": "tsx wer.ts",
     "wer:live": "tsx wer.ts --live",
     "latency": "tsx latency-report.ts",
-    "generate:audio": "tsx generate-audio.ts",
-    "generate:logs": "tsx generate-logs.ts"
+    "generate:synthetic-audio": "tsx generate-audio.ts",
+    "generate:latency-fixture": "tsx generate-logs.ts"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

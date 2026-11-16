@@ -1,14 +1,14 @@
 # Real-Time Voice Assistant
 
-A browser-based voice assistant built for **sub-second time-to-first-audio** with real-time streaming transcription, LLM reasoning with function calling, barge-in cancellation, and streaming TTS — measured end-to-end.
+A browser-based voice assistant targeting **sub-second time-to-first-audio** with real-time streaming transcription, LLM reasoning with function calling, barge-in cancellation, and streaming TTS.
 
-> **p50 TTFA: ~930 ms** after sentence-level TTS streaming (down from ~2 100 ms with full-reply batching).
+> **Performance results are not currently verified.** Run the live evaluation procedures below and record real sessions before publishing latency or WER claims.
 
 ---
 
 ## Demo
 
-> **Record a 2-minute demo and add your video link here.**
+> **Demo video not yet provided.** Record a 2-minute demo and add its link here.
 >
 > Suggested scenes: (1) normal Q&A with weather tool, (2) barge-in mid-sentence, (3) reminder tool, (4) latency dashboard visible.
 
@@ -64,7 +64,7 @@ A browser-based voice assistant built for **sub-second time-to-first-audio** wit
 |---|---|
 | **TypeScript end-to-end** | Shared types between browser and server (`packages/shared`); single language reduces context-switching |
 | **Deepgram Nova-3** over Whisper | True streaming with partial transcripts and configurable endpointing; Whisper requires a full utterance before transcribing — adds 400–800 ms |
-| **Sentence-level TTS streaming** | The `SentenceChunker` emits the first sentence the moment the LLM completes it; TTS begins before the full reply exists, cutting TTFA from ~2 100 ms to ~930 ms |
+| **Sentence-level TTS streaming** | The `SentenceChunker` emits the first sentence as soon as it is complete, allowing TTS to start before the full reply; live latency results still need to be measured |
 | **In-process hot path, not Redis** | Routing audio frames through Redis would add 10–50 ms per hop with no benefit; Redis is used only for session metadata, rate limits, and post-call jobs |
 | **AbortController for barge-in** | A single `.abort()` propagates through `fetch` signals to cancel the LLM stream and the TTS stream atomically; no polling or flag checks needed |
 | **BullMQ for post-call work** | Transcript persistence, metric rollups, and summaries happen asynchronously after the call; they do not block the audio path |
@@ -72,77 +72,24 @@ A browser-based voice assistant built for **sub-second time-to-first-audio** wit
 
 ---
 
-## Evaluation Results
+## Evaluation Status
 
-All measurements from 35 recordings and live session logs. Run the scripts yourself:
+The evaluation tools are available, but the prior published measurements are not evidence of live performance: the audio generator creates synthetic tones rather than speech, and the latency-log generator creates randomized sample metrics. The generators now write only to `eval/fixtures/`; their output must not be used as real WER or latency results. Existing WAVs and logs should be replaced or confirmed as genuine before publishing measurements.
+
+The default WER command compares manifest text hypotheses and checks WAV file format; it does not run ASR or prove that a WAV contains speech. For a live ASR measurement, use genuine microphone recordings and provide `DEEPGRAM_API_KEY` through the process environment:
 
 ```bash
-tsx eval/wer.ts            # WER over recordings/manifest.json
-tsx eval/latency-report.ts # p50/p95 from apps/server/server.log
+pnpm --dir eval wer
+pnpm --dir eval wer:live
 ```
 
-### Latency — Time to First Audio (TTFA)
+For latency, run real conversations with the server and report only from the resulting server log. To compare sentence streaming with buffered TTS, set `TTS_STREAMING_MODE=buffered` and a distinct `LOG_FILE_PATH` for the baseline run, then use `TTS_STREAMING_MODE=sentence` and a different log path for the streaming run:
 
-Measured across 45 live multi-turn conversational turns logged in `apps/server/server.log`:
+```bash
+pnpm --dir eval latency -- --log path/to/streaming.log --compare path/to/buffered.log
+```
 
-| Stage | p50 | p75 | p95 | Mean | Notes |
-|---|---|---|---|---|---|
-| Deepgram endpointing | ~300 ms | ~380 ms | ~450 ms | ~320 ms | Tuned to 300 ms silence boundary |
-| LLM time to first token (TTFT) | 281 ms | 309 ms | 340 ms | 281 ms | Groq `llama-3.3-70b-versatile` |
-| Sentence 1 complete | 474 ms | 498 ms | 547 ms | 470 ms | SentenceChunker regex delimiter |
-| **Total TTFA** | **915 ms** | **983 ms** | **1019 ms** | **926 ms** | End-of-speech → first audio frame |
-| Total LLM Duration | 1411 ms | 1654 ms | 1779 ms | 1364 ms | Complete reply stream |
-
-> **Optimization Impact:** Switching from full-reply buffering (waiting for the complete LLM reply before starting TTS, p50: ~2 140 ms) to streaming Sentence 1 immediately (p50: 915 ms) achieved a **1 225 ms latency reduction** (57% faster time-to-first-audio).
-
-### Stage Breakdown
-
-| Optimization Stage | Full Buffering | Sentence-Level Streaming | Delta |
-|---|---|---|---|
-| ASR endpointing | 500 ms | 300 ms | −200 ms (tuned) |
-| LLM reply wait | ~1 400 ms | — | eliminated |
-| Sentence 1 to TTS | — | 474 ms | fast path |
-| TTS first audio chunk | 240 ms | 160 ms | −80 ms (warm WebSocket) |
-| **Total TTFA** | **~2 140 ms** | **915 ms** | **−1 225 ms** |
-
-### Word Error Rate (WER)
-
-Evaluated on **35 audio recordings** (`eval/recordings/` matching `manifest.json`, total 331 reference words):
-
-| Category | Recordings (n) | WER | Sub | Del | Ins | Key Factor |
-|---|---|---|---|---|---|---|
-| Clear / quiet | 17 | 9.6% | 7 | 8 | 0 | Digit format ('6 PM' vs 'six PM', '256') |
-| Fast speech | 7 | 8.8% | 1 | 4 | 0 | Elision of articles ('the', 'right') |
-| Background Noise | 9 | 17.5% | 7 | 7 | 0 | Acoustic masking (fan hum, typing clatter) |
-| Non-native Accent | 7 | 10.0% | 5 | 2 | 0 | Phonetic vowel shifts ('leap' -> 'lip') |
-| Barge-in Utterances | 5 | 2.1% | 0 | 1 | 0 | Cutoff at interruption onset |
-| Tool Invocation Queries | 21 | 8.9% | 8 | 9 | 0 | Timestamps, dates, city names |
-| **Corpus Total** | **35** | **10.3%** | **17** | **17** | **0** | **p50: 10.0%, p90: 20.0%** |
-
-#### Top Hardest Utterances & Acoustic Error Analysis:
-1. **`r11` (WER: 60.0%)**: *"what is two hundred and fifty six divided by four"* → Deepgram normalized to numeric digits *"what is 256 divided by 4"*.
-2. **`r26` (WER: 27.3%)**: *"set a reminder for my gym session at six thirty AM"* → Music masked *"my"*, time formatted to *"6:30 AM"*.
-3. **`r19` (WER: 22.2%)**: *"what time does the sun set in Kathmandu today"* → Keyboard transient fused *"sun set"* into compound *"sunset"*.
-4. **`r21` (WER: 20.0%)**: *"remind me to take my medicine at eight AM tomorrow"* → Fan noise and accent dropped possessive *"my"*.
-5. **`r07` (WER: 16.7%)**: *"what is the population of Nepal"* → Low-frequency fan rumble masked preposition *"of"*.
-
-### Barge-In Quality
-
-| Metric | Value |
-|---|---|
-| Median stop time (speech → playback off) | ~180 ms |
-| Test interruptions attempted | 5 |
-| Clean cancellations (no stale audio) | 5 / 5 |
-| Conversation history correctly trimmed | 5 / 5 |
-
-### Voice Tool Success Rate
-
-| Tool | Requests | Successes | Notes |
-|---|---|---|---|
-| `get_weather` | 12 | 12 | Geocoding via open-meteo |
-| `get_current_time` | 10 | 10 | Timezone resolution |
-| `set_reminder` | 8 | 8 | Stored in memory (no persistence) |
-| **Total** | **30** | **30 / 30** | **100%** |
+The demo video, live WER results, and comparable before/after latency measurements remain pending real recordings and sessions.
 
 ---
 
@@ -245,26 +192,31 @@ cp .env.example .env
 #   CARTESIA_API_KEY    — cartesia.ai (streaming TTS)
 #   ELEVENLABS_API_KEY  — elevenlabs.io (streaming TTS)
 #   TTS_PROVIDER        — "browser" (default), "cartesia", or "elevenlabs"
+#   DATABASE_URL        — Postgres (required for production persistence)
+#   SENTRY_DSN          — optional error reporting
 
 # 3. Start infrastructure
 docker compose up -d redis db
 
-# 4. Run unit tests
+# 4. Apply database migrations
+pnpm --dir apps/server db:deploy
+
+# 5. Run unit tests
 pnpm --dir apps/server test
 
-# 5. Start backend
+# 6. Start backend
 pnpm --dir apps/server dev
 
-# 6. Start frontend (new terminal)
+# 7. Start frontend (new terminal)
 pnpm --dir apps/web dev
 
-# 7. Open http://localhost:3000 in Chrome/Edge
+# 8. Open http://localhost:3000 in Chrome/Edge
 ```
 
 ### One-command production start
 
 ```bash
-docker compose up          # builds API image + starts redis + postgres + api
+docker compose up          # builds API image, applies migrations, starts redis + postgres + api
 ```
 
 ### Environment Variables
@@ -279,22 +231,35 @@ docker compose up          # builds API image + starts redis + postgres + api
 | `TTS_PROVIDER` | ⬜ | `browser` | `browser` / `cartesia` / `elevenlabs` |
 | `REDIS_URL` | ⬜ | `redis://localhost:6379` | Redis connection |
 | `DATABASE_URL` | ⬜ | — | Postgres (Prisma) |
+| `POSTGRES_PASSWORD` | ⬜ | Compose dev default | Postgres password; set a strong secret for deployment |
+| `DATA_RETENTION_DAYS` | ⬜ | `30` | Days to retain completed sessions, transcripts, and turn metrics (1–3650) |
+| `SENTRY_DSN` | ⬜ | — | Optional Sentry error reporting; request data is scrubbed |
+| `ASR_CONNECT_TIMEOUT_MS` | ⬜ | `10000` | Deepgram WebSocket connection timeout |
+| `LLM_REQUEST_TIMEOUT_MS` | ⬜ | `30000` | LLM request timeout |
+| `TOOL_REQUEST_TIMEOUT_MS` | ⬜ | `10000` | External tool request timeout |
+| `TTS_CONNECT_TIMEOUT_MS` | ⬜ | `10000` | TTS WebSocket connection timeout |
+| `TTS_RESPONSE_TIMEOUT_MS` | ⬜ | `15000` | TTS response timeout |
+| `TTS_STREAMING_MODE` | ⬜ | `sentence` | `sentence` for streaming; `buffered` for latency baseline runs |
 | `JWT_SECRET` | ⬜ | auto-generated | WebSocket auth token signing |
 | `REQUIRE_AUTH` | ⬜ | `false` | Reject WS connections without a JWT |
 | `PORT` | ⬜ | `8080` | Server listen port |
+| `LOG_FILE_PATH` | ⬜ | `apps/server/server.log` | Structured JSON log destination for latency reports |
+
+In production, `DATABASE_URL` is required. Completed sessions, transcripts, and turn metrics are persisted after disconnect; retention cleanup runs at startup and daily, with a 30-day default controlled by `DATA_RETENTION_DAYS`. The API container applies Prisma migrations before starting. Application logs omit transcript text and tool arguments. Sentry is optional and its request data is scrubbed.
 
 ---
 
 ## Evaluation Scripts
 
 ```bash
-# 1. WER with audio file verification (checks 35/35 .wav files on disk)
+# 1. Manifest WER and WAV format checks (does not verify speech content)
 pnpm --dir eval wer
 # or: tsx eval/wer.ts
 
-# 2. Live audio transcription (streams actual .wav audio bytes to Deepgram Nova-3 API)
+# 2. Live ASR evaluation (requires genuine speech WAVs and DEEPGRAM_API_KEY in process env)
 pnpm --dir eval wer:live
-# or: tsx eval/wer.ts --live [--save]
+# Optionally save fresh live hypotheses:
+pnpm --dir eval wer:live -- --save
 
 # 3. Latency report — computes p50/p75/p95 percentiles from apps/server/server.log
 pnpm --dir eval latency
@@ -303,6 +268,10 @@ pnpm --dir eval latency
 # Optional: Point to custom log or manifest files
 tsx eval/latency-report.ts --log /path/to/server.log
 tsx eval/wer.ts --manifest /path/to/manifest.json
+
+# Synthetic parser fixtures only (not real recordings or performance data)
+pnpm --dir eval generate:synthetic-audio
+pnpm --dir eval generate:latency-fixture
 ```
 
 ---
@@ -326,4 +295,4 @@ tsx eval/wer.ts --manifest /path/to/manifest.json
 | 1 | AudioWorklet mic capture, WebSocket transport, Deepgram streaming ASR, live transcript UI | ✅ Complete |
 | 2 | LLM streaming, Sentence Chunker, gapless sentence playback, server TTS (Cartesia / ElevenLabs / browser), per-turn latency metrics | ✅ Complete |
 | 3 | Turn state machine, real-time barge-in with AbortController, voice tools with Redis cache, Redis rate limiting and session registry, BullMQ post-call queue, JWT WebSocket auth | ✅ Complete |
-| 4 | WER evaluation script, latency percentile report, eval manifest (35 recordings), Prometheus metrics, updated README with design decisions and results | ✅ Complete |
+| 4 | Evaluation tooling and Prometheus metrics implemented; real recordings, live measurements, and demo evidence still pending | ⚠️ Partially verified |

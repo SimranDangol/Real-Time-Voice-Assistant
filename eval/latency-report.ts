@@ -5,6 +5,7 @@
  * Usage:
  *   pnpm --dir eval latency
  *   # or: tsx eval/latency-report.ts [--log path/to/server.log]
+ *   # compare against a baseline with --compare path/to/baseline.log
  *
  * Reads newline-delimited JSON (pino format) from the server log file and
  * extracts every "metrics" event to compute per-stage latency percentiles.
@@ -115,11 +116,21 @@ async function parseLogs(logPath: string): Promise<TurnMetricsLogLine[]> {
 
 const args = process.argv.slice(2);
 const logFlag = args.indexOf("--log");
+const compareFlag = args.indexOf("--compare");
 const defaultLogPath = path.join(__dirname, "..", "apps", "server", "server.log");
 const logPath =
   logFlag >= 0
     ? path.resolve(args[logFlag + 1])
     : defaultLogPath;
+const comparePath =
+  compareFlag >= 0 && args[compareFlag + 1]
+    ? path.resolve(args[compareFlag + 1])
+    : null;
+
+if (compareFlag >= 0 && !comparePath) {
+  console.error("❌  --compare requires a baseline log path.\n");
+  process.exit(1);
+}
 
 console.log("\n╔══════════════════════════════════════════════════════════════════════╗");
 console.log("║        Real-Time Voice Assistant — Latency Percentile Report          ║");
@@ -247,5 +258,64 @@ console.log(`
 │  Sessions: ${sessionMap.size}  Turns: ${turns.length}  Interrupted: ${interrupted} (${interruptPct}%)
 └──────────────────────────────────────────────────────────┘
 `);
+
+if (comparePath) {
+  if (!fs.existsSync(comparePath)) {
+    console.error(`❌  Baseline log not found: ${comparePath}`);
+    process.exit(1);
+  }
+
+  const baselineTurns = await parseLogs(comparePath);
+  if (baselineTurns.length === 0) {
+    console.error(`❌  No turn metric lines found in baseline log: ${comparePath}`);
+    process.exit(1);
+  }
+
+  const comparisonStages = [
+    { name: "LLM TTFT", key: "llmFirstTokenMs" as const },
+    { name: "Sentence 1", key: "sentence1Ms" as const },
+    { name: "TTFA", key: "ttfaMs" as const },
+    { name: "Total LLM", key: "totalLlmMs" as const },
+  ];
+  const stageValues = (source: TurnMetricsLogLine[], key: keyof TurnMetricsLogLine) =>
+    source
+      .map((turn) => turn[key])
+      .filter((value): value is number => typeof value === "number" && value > 0 && value < 30_000)
+      .sort((a, b) => a - b);
+  const fmtDelta = (current: number, baseline: number) => {
+    if (isNaN(current) || isNaN(baseline)) return "—";
+    const delta = Math.round(current - baseline);
+    return `${delta > 0 ? "+" : ""}${delta}ms`;
+  };
+
+  console.log(`\n📈  Comparison against baseline: ${comparePath}`);
+  console.log(
+    col("Stage", 16),
+    col("Baseline p50", 15),
+    col("Current p50", 15),
+    col("Δ p50", 12),
+    col("Baseline p95", 15),
+    col("Current p95", 15),
+    "Δ p95"
+  );
+  console.log("─".repeat(90));
+  for (const stage of comparisonStages) {
+    const baseline = stageValues(baselineTurns, stage.key);
+    const current = stageValues(turns, stage.key);
+    const baselineP50 = percentile(baseline, 50);
+    const currentP50 = percentile(current, 50);
+    const baselineP95 = percentile(baseline, 95);
+    const currentP95 = percentile(current, 95);
+    console.log(
+      col(stage.name, 16),
+      col(fmt(baselineP50, "ms"), 15),
+      col(fmt(currentP50, "ms"), 15),
+      col(fmtDelta(currentP50, baselineP50), 12),
+      col(fmt(baselineP95, "ms"), 15),
+      col(fmt(currentP95, "ms"), 15),
+      fmtDelta(currentP95, baselineP95)
+    );
+  }
+}
 
 console.log("✅  Latency report complete.\n");

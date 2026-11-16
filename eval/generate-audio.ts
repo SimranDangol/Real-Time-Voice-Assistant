@@ -4,11 +4,10 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const recordingsDir = path.join(__dirname, "recordings");
+const fixturesDir = path.join(__dirname, "fixtures", "synthetic-recordings");
 const manifestPath = path.join(recordingsDir, "manifest.json");
 
-if (!fs.existsSync(recordingsDir)) {
-  fs.mkdirSync(recordingsDir, { recursive: true });
-}
+fs.mkdirSync(fixturesDir, { recursive: true });
 
 interface ManifestEntry {
   id: string;
@@ -20,8 +19,7 @@ interface ManifestEntry {
 }
 
 /**
- * Creates a standard 16kHz 16-bit mono PCM WAV buffer with speech-like acoustic formants
- * and environmental background noise according to tags.
+ * Creates synthetic tones for WAV parser tests. These are not speech recordings.
  */
 function createWavBuffer(text: string, tags: string[] = []): Buffer {
   const sampleRate = 16000;
@@ -95,13 +93,13 @@ function createWavBuffer(text: string, tags: string[] = []): Buffer {
 }
 
 const manifest: ManifestEntry[] = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
-console.log(`Generating ${manifest.length} audio WAV recordings in ${recordingsDir}...`);
+console.log(`Generating ${manifest.length} synthetic WAV fixtures in ${fixturesDir}...`);
 
 for (const entry of manifest) {
-  const filePath = path.join(recordingsDir, path.basename(entry.file));
+  const filePath = path.join(fixturesDir, path.basename(entry.file));
   const wavBuffer = createWavBuffer(entry.reference, entry.tags);
   fs.writeFileSync(filePath, wavBuffer);
   console.log(`  ✓ Created ${path.basename(filePath)} (${(wavBuffer.length / 1024).toFixed(1)} KB)`);
 }
 
-console.log("\nAll 35 audio files successfully generated!");
+console.log("\nSynthetic fixtures are for parser checks only, not WER or ASR evaluation.");

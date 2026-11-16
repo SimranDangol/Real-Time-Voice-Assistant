@@ -11,11 +11,10 @@
  *   tsx eval/wer.ts --live [--save]
  *
  * Capabilities:
- *   1. Audio Integrity Check: Inspects every .wav recording on disk (RIFF/WAVE header,
- *      16 kHz, 16-bit mono PCM, audio duration, RMS amplitude) to ensure hypotheses
- *      correspond to verified audio recordings.
+ *   1. Audio Integrity Check: Inspects WAV headers and format. This does not verify
+ *      that a file contains human speech or that its transcript matches the audio.
  *   2. Levenshtein Edit Distance: Calculates word-level WER (S, D, I) and character-level CER.
- *   3. Acoustic Tag Breakdown: Breaks down error rates across Noise, Fast speech,
+ *   3. Manifest Tag Breakdown: Breaks down error rates across Noise, Fast speech,
  *      Non-native accents, Tool queries, and Barge-in interruptions.
  *   4. Live Audio Transcribe Mode (--live): Sends raw .wav audio bytes to Deepgram Nova-3 API
  *      over HTTPS and evaluates WER directly on the live transcription result.
@@ -26,38 +25,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-// ── Environment Loading ───────────────────────────────────────────────────────
-
-function loadEnv(): void {
-  const envPaths = [
-    path.join(__dirname, "../.env"),
-    path.join(__dirname, "../apps/server/.env"),
-    path.join(process.cwd(), ".env"),
-  ];
-  for (const envPath of envPaths) {
-    if (fs.existsSync(envPath)) {
-      const content = fs.readFileSync(envPath, "utf-8");
-      for (const line of content.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith("#")) continue;
-        const eqIdx = trimmed.indexOf("=");
-        if (eqIdx > 0) {
-          const key = trimmed.slice(0, eqIdx).trim();
-          let val = trimmed.slice(eqIdx + 1).trim();
-          if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-            val = val.slice(1, -1);
-          }
-          if (!process.env[key]) {
-            process.env[key] = val;
-          }
-        }
-      }
-    }
-  }
-}
-
-loadEnv();
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -174,32 +141,54 @@ function inspectWavFile(filePath: string): AudioVerification {
 async function transcribeAudioWithDeepgram(
   filePath: string,
   apiKey: string
-): Promise<string | null> {
-  try {
-    const audioBytes = fs.readFileSync(filePath);
-    const url = "https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&language=en-US";
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Token ${apiKey}`,
-        "Content-Type": "audio/wav",
-      },
-      body: audioBytes,
-    });
+): Promise<string> {
+  const audioBytes = fs.readFileSync(filePath);
+  const url = "https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&language=en-US";
 
-    if (!res.ok) {
-      const errText = await res.text();
-      console.warn(`    ⚠️ Deepgram HTTP ${res.status}: ${errText.slice(0, 100)}`);
-      return null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Token ${apiKey}`,
+          "Content-Type": "audio/wav",
+        },
+        body: audioBytes,
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      if (attempt === 0) continue;
+      throw new Error(
+        `Deepgram request failed after retry: ${error instanceof Error ? error.message : "unknown error"}`
+      );
     }
 
-    const json = (await res.json()) as any;
-    const transcript = json?.results?.channels?.[0]?.alternatives?.[0]?.transcript;
-    return typeof transcript === "string" ? transcript.trim() : null;
-  } catch (err: any) {
-    console.warn(`    ⚠️ Live transcription error: ${err?.message}`);
-    return null;
+    if ([408, 429].includes(response.status) || response.status >= 500) {
+      await response.body?.cancel();
+      if (attempt === 0) continue;
+    }
+
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`Deepgram request failed (${response.status})`);
+    }
+
+    const json = (await response.json()) as {
+      results?: {
+        channels?: Array<{
+          alternatives?: Array<{ transcript?: unknown }>;
+        }>;
+      };
+    };
+    const transcript = json.results?.channels?.[0]?.alternatives?.[0]?.transcript;
+    if (typeof transcript !== "string" || transcript.trim().length === 0) {
+      throw new Error("Deepgram returned no transcript");
+    }
+    return transcript.trim();
   }
+
+  throw new Error("Deepgram request failed after retry");
 }
 
 // ── Levenshtein Distance (Word-Level) ─────────────────────────────────────────
@@ -302,11 +291,9 @@ async function main(): Promise<void> {
   const apiKey = process.env.DEEPGRAM_API_KEY;
   if (isLiveMode) {
     if (!apiKey) {
-      console.warn("⚠️  --live specified but DEEPGRAM_API_KEY is not set in environment or .env");
-      console.warn("    Falling back to verified manifest hypotheses.\n");
-    } else {
-      console.log(`🎙️  Live Mode active: streaming .wav files directly to Deepgram Nova-3 API...`);
+      throw new Error("--live requires DEEPGRAM_API_KEY in the process environment");
     }
+    console.log("Live mode: streaming WAV files to Deepgram Nova-3...");
   }
 
   const results: WERResult[] = [];
@@ -320,6 +307,9 @@ async function main(): Promise<void> {
       : path.join(manifestDir, path.basename(entry.file));
 
     const audioInfo = inspectWavFile(audioPath);
+    if (isLiveMode && (!audioInfo.exists || !audioInfo.valid)) {
+      throw new Error(`Cannot transcribe ${audioPath}: ${audioInfo.error ?? "invalid WAV format"}`);
+    }
     if (audioInfo.exists && audioInfo.valid) {
       verifiedAudioCount++;
       totalDurationSec += audioInfo.durationSec;
@@ -331,16 +321,12 @@ async function main(): Promise<void> {
     if (isLiveMode && apiKey && audioInfo.exists && audioInfo.valid) {
       process.stdout.write(`  Transcribing ${path.basename(audioPath)}... `);
       const liveHypothesis = await transcribeAudioWithDeepgram(audioPath, apiKey);
-      if (liveHypothesis !== null) {
-        hypothesis = liveHypothesis;
-        liveTranscribed = true;
-        console.log(`✓ "${hypothesis.slice(0, 45)}"`);
-        if (shouldSave && entry.hypothesis !== liveHypothesis) {
-          entry.hypothesis = liveHypothesis;
-          modifiedManifest = true;
-        }
-      } else {
-        console.log(`(using manifest fallback)`);
+      hypothesis = liveHypothesis;
+      liveTranscribed = true;
+      console.log(`✓ "${hypothesis.slice(0, 45)}"`);
+      if (shouldSave && entry.hypothesis !== liveHypothesis) {
+        entry.hypothesis = liveHypothesis;
+        modifiedManifest = true;
       }
     }
 
@@ -414,15 +400,16 @@ async function main(): Promise<void> {
   console.log("─".repeat(95));
   console.log(`\n🎧  Audio File Integrity Verification:`);
   console.log(
-    `    • Recordings Verified: ${verifiedAudioCount}/${results.length} .wav files on disk`
+    `    • Format-Valid WAVs   : ${verifiedAudioCount}/${results.length} files`
   );
   console.log(`    • Audio Format       : 16,000 Hz, 16-bit Mono PCM (linear16)`);
-  console.log(`    • Total Audio Length : ${totalDurationSec.toFixed(1)} seconds of recorded speech`);
+  console.log(`    • Total Audio Length : ${totalDurationSec.toFixed(1)} seconds of WAV audio`);
   if (isLiveMode && apiKey) {
     console.log(`    • Evaluation Mode    : Live Deepgram Nova-3 API Transcription (--live)`);
   } else {
-    console.log(`    • Evaluation Mode    : Verified Manifest (run with '--live' to stream audio files to API)`);
+    console.log(`    • Evaluation Mode    : Manifest hypotheses only (not live ASR output)`);
   }
+  console.log("    • Limitation         : WAV format checks do not verify human speech or transcript provenance");
 
   // ── Overall WER / CER Metrics ──────────────────────────────────────────────
 
@@ -464,15 +451,15 @@ async function main(): Promise<void> {
   // ── Hardest Utterances ─────────────────────────────────────────────────────
 
   const worst = [...results].sort((a, b) => b.wer - a.wer).slice(0, 5);
-  console.log("\n⚠️   Top 5 Hardest Utterances & Acoustic Phenomena:");
+  console.log("\n⚠️   Top 5 Manifest Hypothesis Comparisons:");
   for (const r of worst) {
     const entry = manifest.find((e) => e.id === r.id)!;
     console.log(`    [${r.id}] WER=${pct(r.wer)}  ref: "${entry.reference}"`);
     console.log(`         hyp: "${entry.hypothesis}"`);
-    if (entry.notes) console.log(`         analysis: ${entry.notes}`);
+    if (entry.notes) console.log(`         manifest note: ${entry.notes}`);
   }
 
-  console.log("\n✅  WER & Audio Verification complete.\n");
+  console.log("\n✅  Manifest WER & WAV format report complete.\n");
 }
 
 main().catch((err) => {

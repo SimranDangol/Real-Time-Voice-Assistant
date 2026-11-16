@@ -124,6 +124,12 @@ export async function checkRateLimit(
 ): Promise<{ allowed: boolean; remaining: number }> {
   const client = getRedis();
   const redisKey = `ratelimit:${key}`;
+  const failClosed = process.env.NODE_ENV === "production";
+
+  if (!client && failClosed) {
+    logger.error("Redis is unavailable; denying rate-limited request in production");
+    return { allowed: false, remaining: 0 };
+  }
 
   if (client) {
     try {
@@ -134,7 +140,11 @@ export async function checkRateLimit(
       const allowed = current <= limit;
       return { allowed, remaining: Math.max(0, limit - current) };
     } catch (err) {
-      logger.warn({ err, key }, "Redis rate-limit error, allowing request");
+      if (failClosed) {
+        logger.error({ err }, "Redis rate-limit error; denying request in production");
+        return { allowed: false, remaining: 0 };
+      }
+      logger.warn({ err }, "Redis rate-limit error; allowing request in development");
       return { allowed: true, remaining: limit };
     }
   }

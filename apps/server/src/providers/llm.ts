@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import { TOOLS, executeTool } from "../tools/index.js";
+import { fetchWithRetry, getTimeoutMs } from "./request.js";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -74,7 +75,7 @@ export async function streamAssistantReply({
     toolCalls: Array<{ id: string; name: string; arguments: string }>;
     fullText: string;
   }> {
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    const { response, dispose } = await fetchWithRetry(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -89,14 +90,15 @@ export async function streamAssistantReply({
         tool_choice: "auto",
         messages: msgs,
       }),
+    }, {
+      provider: "LLM",
+      timeoutMs: getTimeoutMs("LLM_REQUEST_TIMEOUT_MS", 30_000),
+      signal,
+      log,
     });
 
-    if (!response.ok) {
-      const details = await response.text();
-      throw new Error(`LLM request failed (${response.status}): ${details}`);
-    }
-
     if (!response.body) {
+      dispose();
       throw new Error("LLM response body is empty");
     }
 
@@ -109,77 +111,82 @@ export async function streamAssistantReply({
     // Collect streaming tool calls
     const toolCallsMap = new Map<number, { id: string; name: string; arguments: string }>();
 
-    while (true) {
-      if (signal?.aborted) break;
+    try {
+      while (true) {
+        if (signal?.aborted) break;
 
-      const { done, value } = await reader.read();
-      if (done) break;
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed === "data: [DONE]") continue;
-        if (!trimmed.startsWith("data:")) continue;
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed === "data: [DONE]") continue;
+          if (!trimmed.startsWith("data:")) continue;
 
-        const payload = trimmed.slice(5).trim();
-        if (!payload) continue;
+          const payload = trimmed.slice(5).trim();
+          if (!payload) continue;
 
-        try {
-          const parsed = JSON.parse(payload) as {
-            choices?: Array<{
-              delta?: {
-                content?: string;
-                tool_calls?: Array<{
-                  index: number;
-                  id?: string;
-                  function?: { name?: string; arguments?: string };
-                }>;
-              };
-              finish_reason?: string;
-            }>;
-          };
+          try {
+            const parsed = JSON.parse(payload) as {
+              choices?: Array<{
+                delta?: {
+                  content?: string;
+                  tool_calls?: Array<{
+                    index: number;
+                    id?: string;
+                    function?: { name?: string; arguments?: string };
+                  }>;
+                };
+                finish_reason?: string;
+              }>;
+            };
 
-          const choice = parsed.choices?.[0];
-          const deltaContent = choice?.delta?.content;
-          const deltaToolCalls = choice?.delta?.tool_calls;
+            const choice = parsed.choices?.[0];
+            const deltaContent = choice?.delta?.content;
+            const deltaToolCalls = choice?.delta?.tool_calls;
 
-          // Accumulate tool calls if model decided to call tools
-          if (deltaToolCalls && Array.isArray(deltaToolCalls)) {
-            for (const tc of deltaToolCalls) {
-              const idx = tc.index ?? 0;
-              const existing = toolCallsMap.get(idx) ?? { id: "", name: "", arguments: "" };
-              if (tc.id) existing.id = tc.id;
-              if (tc.function?.name) existing.name += tc.function.name;
-              if (tc.function?.arguments) existing.arguments += tc.function.arguments;
-              toolCallsMap.set(idx, existing);
+            // Accumulate tool calls if model decided to call tools
+            if (deltaToolCalls && Array.isArray(deltaToolCalls)) {
+              for (const tc of deltaToolCalls) {
+                const idx = tc.index ?? 0;
+                const existing = toolCallsMap.get(idx) ?? { id: "", name: "", arguments: "" };
+                if (tc.id) existing.id = tc.id;
+                if (tc.function?.name) existing.name += tc.function.name;
+                if (tc.function?.arguments) existing.arguments += tc.function.arguments;
+                toolCallsMap.set(idx, existing);
+              }
             }
-          }
 
-          // Emit regular voice content
-          if (typeof deltaContent === "string" && deltaContent.length > 0) {
-            if (isFirstToken) {
-              isFirstToken = false;
-              onFirstToken?.();
+            // Emit regular voice content
+            if (typeof deltaContent === "string" && deltaContent.length > 0) {
+              if (isFirstToken) {
+                isFirstToken = false;
+                onFirstToken?.();
+              }
+              fullText += deltaContent;
+              onDelta?.(deltaContent);
+              onPartial?.(fullText);
             }
-            fullText += deltaContent;
-            onDelta?.(deltaContent);
-            onPartial?.(fullText);
+          } catch (err) {
+            log.warn({ errorName: err instanceof Error ? err.name : "unknown" }, "Skipping malformed LLM stream chunk");
           }
-        } catch (err) {
-          log.warn({ err, payload }, "Skipping malformed LLM stream chunk");
         }
       }
-    }
 
-    const toolCalls = Array.from(toolCallsMap.values()).filter((t) => t.name.length > 0);
-    return {
-      hasToolCalls: toolCalls.length > 0,
-      toolCalls,
-      fullText,
-    };
+      const toolCalls = Array.from(toolCallsMap.values()).filter((t) => t.name.length > 0);
+      return {
+        hasToolCalls: toolCalls.length > 0,
+        toolCalls,
+        fullText,
+      };
+    } finally {
+      reader.releaseLock();
+      dispose();
+    }
   }
 
   try {
@@ -187,7 +194,7 @@ export async function streamAssistantReply({
     if (signal?.aborted) return;
 
     if (firstPass.hasToolCalls) {
-      log.info({ toolCalls: firstPass.toolCalls }, "LLM invoked voice tools");
+      log.info({ toolCount: firstPass.toolCalls.length }, "LLM invoked voice tools");
 
       // Build assistant tool call message
       const assistantMsg: ChatMessage = {
@@ -236,6 +243,7 @@ export async function streamAssistantReply({
       log.info("LLM stream aborted");
       return;
     }
-    onError(err instanceof Error ? err : new Error(String(err)));
+    const error = err instanceof Error ? err : new Error("LLM provider request failed");
+    onError(error);
   }
 }

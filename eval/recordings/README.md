@@ -1,6 +1,6 @@
 # eval/recordings/
 
-This directory contains the 35 audio recordings used for Word Error Rate (WER) evaluation and audio file integrity verification.
+Place genuine microphone recordings here for Word Error Rate (WER) evaluation. WAV header checks only validate container and format; they do not prove that a file contains speech or that its transcript matches the audio.
 
 ## Structure
 
@@ -21,11 +21,11 @@ The evaluation script (`eval/wer.ts`) supports two operating modes:
    ```bash
    pnpm --dir eval wer
    ```
-   Inspects each `.wav` file on disk:
+   Calculates WER from the manifest's text hypotheses and inspects available `.wav` files:
    - Validates RIFF/WAVE container header
    - Enforces 16,000 Hz, 16-bit mono PCM audio specifications
-   - Computes duration and acoustic sample metrics
-   - Verifies each manifest hypothesis against its reference transcript
+   - Computes file duration
+   - Does not run ASR or validate transcript provenance
 
 2. **Live Audio Transcribe Mode (`--live`):**
    ```bash
@@ -33,7 +33,7 @@ The evaluation script (`eval/wer.ts`) supports two operating modes:
    # or:
    tsx eval/wer.ts --live [--save]
    ```
-   Reads each `.wav` file directly from disk and streams its audio bytes to Deepgram Nova-3 API (`https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true`), computing the WER directly against the live ASR response.
+   Reads each `.wav` file directly from disk and sends its audio bytes to Deepgram Nova-3, computing WER against the live response. Set `DEEPGRAM_API_KEY` in the process environment; the script does not read `.env`.
 
 ## Tag Definitions
 
@@ -46,9 +46,10 @@ The evaluation script (`eval/wer.ts`) supports two operating modes:
 | `tool` | Intent invoking a voice tool (`get_weather`, `get_current_time`, `set_reminder`) |
 | `barge-in` | Interruption utterances with onset acoustic cutoff |
 
-## Generating Test Audio
+## Synthetic Parser Fixtures
 
-To regenerate or customize the 35 baseline WAV recordings:
+Synthetic fixtures can be generated separately:
 ```bash
-pnpm --dir eval generate:audio
+pnpm --dir eval generate:synthetic-audio
 ```
+They are written to `eval/fixtures/synthetic-recordings/` and are not speech recordings; do not use them for WER or live ASR results.

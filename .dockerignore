@@ -1,0 +1,15 @@
+.git
+.next
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+**/*.log
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+eval/recordings/*.wav
+eval/recordings/*.mp3
+eval/recordings/*.ogg
+eval/recordings/*.m4a

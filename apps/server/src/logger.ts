@@ -12,7 +12,7 @@ if (!fs.existsSync(logDir)) {
   fs.mkdirSync(logDir, { recursive: true });
 }
 
-// Write raw structured JSON to server.log for latency benchmarking and post-call auditing
+// Write structured logs for latency reports and operational diagnostics.
 const fileStream = fs.createWriteStream(logFilePath, { flags: "a" });
 
 // Pretty console logging in development, raw stream in production

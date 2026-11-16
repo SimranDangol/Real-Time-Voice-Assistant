@@ -1,0 +1,2 @@
+{"sessionId":"ci-smoke","turnId":"t1-ci","ttfaMs":900,"llmFirstTokenMs":250,"sentence1Ms":420,"totalLlmMs":1100,"interrupted":false,"msg":"Turn metrics"}
+{"sessionId":"ci-smoke","turnId":"t2-ci","ttfaMs":1100,"llmFirstTokenMs":300,"sentence1Ms":500,"totalLlmMs":1300,"interrupted":true,"msg":"Turn metrics"}
