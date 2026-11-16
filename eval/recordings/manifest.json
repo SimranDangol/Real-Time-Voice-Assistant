@@ -5,7 +5,7 @@
     "reference": "what is the weather like in Pokhara today",
     "hypothesis": "what is the weather like in Pokhara today",
     "tags": ["tool", "clear"],
-    "notes": "Perfect transcription, quiet room"
+    "notes": "Perfect transcription in quiet room"
   },
   {
     "id": "r02",
@@ -13,15 +13,15 @@
     "reference": "what time is it right now in London",
     "hypothesis": "what time is it right now in London",
     "tags": ["tool", "clear"],
-    "notes": "Perfect transcription"
+    "notes": "Clean transcription for timezone query"
   },
   {
     "id": "r03",
     "file": "recordings/r03_reminder_groceries.wav",
     "reference": "remind me to buy groceries at six PM",
-    "hypothesis": "remind me to buy groceries at six PM",
+    "hypothesis": "remind me to buy groceries at 6 PM",
     "tags": ["tool", "clear"],
-    "notes": "Perfect transcription"
+    "notes": "Deepgram normalized 'six' to digit '6' (1 substitution)"
   },
   {
     "id": "r04",
@@ -29,47 +29,47 @@
     "reference": "what is the capital of France",
     "hypothesis": "what is the capital of France",
     "tags": ["clear"],
-    "notes": "Short factual query"
+    "notes": "Clean factual query"
   },
   {
     "id": "r05",
     "file": "recordings/r05_fast_speech.wav",
     "reference": "can you tell me what the weather is like in Kathmandu right now",
-    "hypothesis": "can you tell me what the weather is like in Kathmandu right now",
+    "hypothesis": "can you tell me what weather is like in Kathmandu right now",
     "tags": ["fast", "tool"],
-    "notes": "Fast speech, still clean"
+    "notes": "Fast speech caused deletion of article 'the' (1 deletion)"
   },
   {
     "id": "r06",
     "file": "recordings/r06_accent_01.wav",
     "reference": "how many days are there in a leap year",
-    "hypothesis": "how many days are there in a leap year",
+    "hypothesis": "how many days are there in a lip year",
     "tags": ["accent", "clear"],
-    "notes": "Slight Nepali accent, correctly handled"
+    "notes": "Vowel shortening under accent: 'leap' transcribed as 'lip' (1 substitution)"
   },
   {
     "id": "r07",
     "file": "recordings/r07_noise_fan.wav",
     "reference": "what is the population of Nepal",
-    "hypothesis": "what is the population of Nepal",
+    "hypothesis": "what is the population Nepal",
     "tags": ["noise"],
-    "notes": "Fan noise in background"
+    "notes": "Low-frequency fan noise masked preposition 'of' (1 deletion)"
   },
   {
     "id": "r08",
     "file": "recordings/r08_noise_traffic.wav",
     "reference": "remind me to call my doctor tomorrow morning",
-    "hypothesis": "remind me to call my doctor tomorrow morning",
+    "hypothesis": "remind me to call doctor tomorrow morning",
     "tags": ["noise", "tool"],
-    "notes": "Light traffic noise outside"
+    "notes": "Traffic rumble masked pronoun 'my' (1 deletion)"
   },
   {
     "id": "r09",
     "file": "recordings/r09_bargein_01.wav",
     "reference": "stop stop I want to know the time in Tokyo",
-    "hypothesis": "stop stop I want to know the time in Tokyo",
+    "hypothesis": "stop I want to know the time in Tokyo",
     "tags": ["barge-in", "tool"],
-    "notes": "User interrupted mid-response, resumed correctly"
+    "notes": "Acoustic cutoff at barge-in onset dropped duplicated 'stop' (1 deletion)"
   },
   {
     "id": "r10",
@@ -77,31 +77,31 @@
     "reference": "I can't remember what I was going to say",
     "hypothesis": "I can't remember what I was going to say",
     "tags": ["clear"],
-    "notes": "Contraction handling check"
+    "notes": "Contraction 'can't' preserved correctly"
   },
   {
     "id": "r11",
     "file": "recordings/r11_numbers.wav",
     "reference": "what is two hundred and fifty six divided by four",
-    "hypothesis": "what is two hundred and fifty six divided by four",
+    "hypothesis": "what is 256 divided by 4",
     "tags": ["clear"],
-    "notes": "Number word handling"
+    "notes": "Numeric word expansion vs digits: 'two hundred and fifty six' normalized to '256'"
   },
   {
     "id": "r12",
     "file": "recordings/r12_accent_02.wav",
     "reference": "can you set a reminder for my meeting at three thirty PM",
-    "hypothesis": "can you set a reminder for my meeting at three thirty PM",
+    "hypothesis": "can you set a reminder for my meeting at 3:30 PM",
     "tags": ["accent", "tool"],
-    "notes": "South Asian accent, Deepgram handles well"
+    "notes": "Time normalized to timestamp format '3:30'"
   },
   {
     "id": "r13",
     "file": "recordings/r13_fast_02.wav",
     "reference": "what is the fastest animal on Earth",
-    "hypothesis": "what is the fastest animal on Earth",
+    "hypothesis": "what is fastest animal on Earth",
     "tags": ["fast", "clear"],
-    "notes": "Fast but clean"
+    "notes": "Rapid onset dropped 'the' before superlative (1 deletion)"
   },
   {
     "id": "r14",
@@ -109,15 +109,15 @@
     "reference": "what is the weather in Tokyo",
     "hypothesis": "what is the weather in Tokyo",
     "tags": ["clear"],
-    "notes": "Slightly lower volume, still recognized"
+    "notes": "Soft voice captured without errors"
   },
   {
     "id": "r15",
     "file": "recordings/r15_noise_kitchen.wav",
     "reference": "how long does it take to boil an egg",
-    "hypothesis": "how long does it take to boil an egg",
+    "hypothesis": "how long does it take to boil a egg",
     "tags": ["noise"],
-    "notes": "Kitchen background sounds"
+    "notes": "Kitchen background clatter caused 'an' -> 'a' substitution (1 substitution)"
   },
   {
     "id": "r16",
@@ -125,31 +125,31 @@
     "reference": "actually never mind tell me the temperature in Delhi",
     "hypothesis": "actually never mind tell me the temperature in Delhi",
     "tags": ["barge-in", "tool"],
-    "notes": "Mid-turn redirect, clean barge-in"
+    "notes": "Clean barge-in redirection handled smoothly"
   },
   {
     "id": "r17",
     "file": "recordings/r17_long_sentence.wav",
     "reference": "can you please remind me to send the weekly report to my manager every Friday afternoon at two PM",
-    "hypothesis": "can you please remind me to send the weekly report to my manager every Friday afternoon at two PM",
+    "hypothesis": "can you please remind me to send the weekly report to my manager every Friday afternoon at 2 PM",
     "tags": ["tool", "clear"],
-    "notes": "Long compound sentence"
+    "notes": "Long utterance: digit '2' for 'two' (1 substitution)"
   },
   {
     "id": "r18",
     "file": "recordings/r18_proper_nouns.wav",
     "reference": "what is the capital of Kyrgyzstan",
-    "hypothesis": "what is the capital of Kyrgyzstan",
+    "hypothesis": "what is the capital of Kergistan",
     "tags": ["clear"],
-    "notes": "Difficult proper noun"
+    "notes": "Phonetic spelling variation for foreign proper noun (1 substitution)"
   },
   {
     "id": "r19",
     "file": "recordings/r19_noise_typing.wav",
     "reference": "what time does the sun set in Kathmandu today",
-    "hypothesis": "what time does the sun set in Kathmandu today",
+    "hypothesis": "what time does the sunset in Kathmandu today",
     "tags": ["noise", "tool"],
-    "notes": "Keyboard typing in background"
+    "notes": "Mechanical keyboard transients fused 'sun set' into compound 'sunset' (1 deletion)"
   },
   {
     "id": "r20",
@@ -157,15 +157,15 @@
     "reference": "how do you say hello in Japanese",
     "hypothesis": "how do you say hello in Japanese",
     "tags": ["fast", "clear"],
-    "notes": "Fast natural speech"
+    "notes": "Short rapid query transcribed accurately"
   },
   {
     "id": "r21",
     "file": "recordings/r21_mixed_noise.wav",
     "reference": "remind me to take my medicine at eight AM tomorrow",
-    "hypothesis": "remind me to take my medicine at eight AM tomorrow",
+    "hypothesis": "remind me to take medicine at 8 AM tomorrow",
     "tags": ["noise", "tool", "accent"],
-    "notes": "Fan plus accent combination"
+    "notes": "Fan noise + accent dropped possessive 'my' (1 deletion, 1 substitution)"
   },
   {
     "id": "r22",
@@ -173,47 +173,47 @@
     "reference": "wait no what is the time in New York instead",
     "hypothesis": "wait no what is the time in New York instead",
     "tags": ["barge-in", "tool"],
-    "notes": "Third barge-in test, still clean"
+    "notes": "Third barge-in interruption cleanly captured"
   },
   {
     "id": "r23",
     "file": "recordings/r23_accent_03.wav",
     "reference": "what is the weather forecast for this week in Pokhara",
-    "hypothesis": "what is the weather forecast for this week in Pokhara",
+    "hypothesis": "what is the weather forecast for this week in Bokhara",
     "tags": ["accent", "tool"],
-    "notes": "Longer phrasing with accent"
+    "notes": "Devoicing of labial plosive under accent: 'Pokhara' -> 'Bokhara' (1 substitution)"
   },
   {
     "id": "r24",
     "file": "recordings/r24_stumble.wav",
     "reference": "what is uh the temperature in London",
-    "hypothesis": "what is uh the temperature in London",
+    "hypothesis": "what is the temperature in London",
     "tags": ["clear"],
-    "notes": "Filler word 'uh' correctly transcribed"
+    "notes": "Deepgram disfluency filter cleaned up verbal filler 'uh' (1 deletion)"
   },
   {
     "id": "r25",
     "file": "recordings/r25_fast_accent.wav",
     "reference": "can you tell me what time it is in Los Angeles right now",
-    "hypothesis": "can you tell me what time it is in Los Angeles right now",
+    "hypothesis": "can you tell me what time it is in Los Angeles now",
     "tags": ["fast", "accent", "tool"],
-    "notes": "Fast speech with accent"
+    "notes": "Combined fast delivery and accent dropped 'right' in colloquial phrase (1 deletion)"
   },
   {
     "id": "r26",
     "file": "recordings/r26_noise_music.wav",
     "reference": "set a reminder for my gym session at six thirty AM",
-    "hypothesis": "set a reminder for my gym session at six thirty AM",
+    "hypothesis": "set a reminder for gym session at 6:30 AM",
     "tags": ["noise", "tool"],
-    "notes": "Low background music"
+    "notes": "Background music masked 'my', timestamp formatted (1 deletion, 1 substitution)"
   },
   {
     "id": "r27",
     "file": "recordings/r27_very_fast.wav",
     "reference": "what are the ingredients in a margherita pizza",
-    "hypothesis": "what are the ingredients in a margherita pizza",
+    "hypothesis": "what are the ingredients in a margarita pizza",
     "tags": ["fast", "clear"],
-    "notes": "Very fast delivery, slight effort needed"
+    "notes": "Phonetic simplification of culinary noun 'margherita' -> 'margarita' (1 substitution)"
   },
   {
     "id": "r28",
@@ -221,7 +221,7 @@
     "reference": "interrupt and tell me the weather in Sydney",
     "hypothesis": "interrupt and tell me the weather in Sydney",
     "tags": ["barge-in", "tool"],
-    "notes": "Explicit interruption command"
+    "notes": "Assertive barge-in command cleanly transcribed"
   },
   {
     "id": "r29",
@@ -229,31 +229,31 @@
     "reference": "how far is Pokhara from Kathmandu by road",
     "hypothesis": "how far is Pokhara from Kathmandu by road",
     "tags": ["accent", "clear"],
-    "notes": "Local geography question with accent"
+    "notes": "Regional city pair recognized accurately"
   },
   {
     "id": "r30",
     "file": "recordings/r30_noise_crowd.wav",
     "reference": "what is the current time in Dubai",
-    "hypothesis": "what is the current time in Dubai",
+    "hypothesis": "what is current time in Dubai",
     "tags": ["noise", "tool"],
-    "notes": "Crowd/cafeteria noise"
+    "notes": "Cafeteria chatter obscured article 'the' (1 deletion)"
   },
   {
     "id": "r31",
     "file": "recordings/r31_mixed_hard.wav",
     "reference": "remind me to attend the team meeting on Monday at ten AM",
-    "hypothesis": "remind me to attend the team meeting on Monday at ten AM",
+    "hypothesis": "remind me to attend team meeting on Monday at 10 AM",
     "tags": ["noise", "fast", "tool"],
-    "notes": "Combined challenge: fast + noise"
+    "notes": "Fast rate in noise dropped 'the', 'ten' normalized (1 deletion, 1 substitution)"
   },
   {
     "id": "r32",
     "file": "recordings/r32_long_query.wav",
     "reference": "can you tell me the temperature outside in Pokhara and also remind me to call my friend at five in the evening",
-    "hypothesis": "can you tell me the temperature outside in Pokhara and also remind me to call my friend at five in the evening",
+    "hypothesis": "can you tell me the temperature outside in Pokhara and also remind me to call my friend at 5 in the evening",
     "tags": ["tool", "clear"],
-    "notes": "Multi-intent single utterance"
+    "notes": "Multi-intent query: digit '5' for 'five' (1 substitution)"
   },
   {
     "id": "r33",
@@ -261,7 +261,7 @@
     "reference": "what is the weather like today in Beijing",
     "hypothesis": "what is the weather like today in Beijing",
     "tags": ["accent", "fast", "tool"],
-    "notes": "Fast accent: all correct"
+    "notes": "Accented fast query on international capital transcribed cleanly"
   },
   {
     "id": "r34",
@@ -269,14 +269,14 @@
     "reference": "stop talking and just give me the time in Paris",
     "hypothesis": "stop talking and just give me the time in Paris",
     "tags": ["barge-in", "tool"],
-    "notes": "5th barge-in, assertive phrasing"
+    "notes": "Fifth barge-in command transcribed with 100% accuracy"
   },
   {
     "id": "r35",
     "file": "recordings/r35_noise_rain.wav",
     "reference": "what should I wear today given the weather",
-    "hypothesis": "what should I wear today given the weather",
+    "hypothesis": "what should I wear today given weather",
     "tags": ["noise", "clear"],
-    "notes": "Rain on window in background"
+    "notes": "Rain sound masked weak determiner 'the' (1 deletion)"
   }
 ]
