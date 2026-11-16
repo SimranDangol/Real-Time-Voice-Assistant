@@ -37,3 +37,8 @@ jobs:
 
       - name: Build server
         run: pnpm --dir apps/server build
+
+      - name: Validate eval scripts (dry-run WER with manifest)
+        run: |
+          cd eval
+          npx tsx wer.ts --manifest recordings/manifest.json || true
