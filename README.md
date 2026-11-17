@@ -58,6 +58,154 @@ A browser-based voice assistant targeting **sub-second time-to-first-audio** wit
 
 ---
 
+### UML Sequence Diagram (Streaming Turn & Barge-In)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as User (Mic)
+    participant WS as WebSocket Server
+    participant SM as SessionManager
+    participant ASR as Deepgram Nova-3
+    participant LLM as Groq Llama-3
+    participant SC as SentenceChunker
+    participant TTS as Streaming TTS
+
+    User->>WS: Binary audio frames (16kHz PCM16)
+    WS->>ASR: Stream audio chunk
+    ASR-->>SM: speech_final ("What's the weather?")
+    
+    SM->>SM: setState("thinking")
+    SM->>LLM: Stream prompt + history
+    LLM-->>SC: Token stream ("It's 21 degrees.")
+    SC-->>SM: Sentence 1 boundary complete
+    SM->>TTS: Send Sentence 1 (markSentence1)
+    SM->>SM: setState("speaking") (TTFA hit: 877ms)
+    TTS-->>WS: Audio chunks
+    WS-->>User: Plays audio
+
+    Note over User, TTS: User interrupts mid-speech: "Stop!"
+    User->>WS: Audio frames during speaking
+    WS->>ASR: Stream audio
+    ASR-->>SM: Speech detected (Barge-in)
+    SM->>LLM: AbortController.abort()
+    SM->>TTS: Close active TTS stream
+    SM->>WS: {"type": "interrupted", "turnId": "t1"}
+    WS-->>User: Flush playback buffer immediately
+```
+
+**How the Real-Time Pipeline Works:**
+1. **Streaming Audio Ingestion (Steps 1–3):** 16kHz PCM audio flows continuously from the browser AudioWorklet over the WebSocket to Deepgram Nova-3. Deepgram emits interim transcripts and fires `speech_final` as soon as 300ms endpointing silence is detected.
+2. **Early Sentence Chunking (Steps 4–11):** The LLM streams tokens immediately. Rather than waiting for the complete answer, `SentenceChunker` slices the stream at sentence punctuation (`.`, `!`, `?`) and dispatches **Sentence 1** to TTS immediately. This hits our **877ms p50 Time-to-First-Audio (TTFA)**.
+3. **Atomic Barge-In Interruption (Steps 12–18):** When user speech is detected during assistant playback, `SessionManager` fires `AbortController.abort()`, terminating in-flight LLM HTTP and TTS connections atomically. A control event signals the browser to wipe its playback buffer, and dialogue history is cleanly pruned to only spoken words.
+
+---
+
+### Database Entity-Relationship Diagram (ERD)
+
+```mermaid
+erDiagram
+    User ||--o{ Session : "initiates"
+    Session ||--o{ Transcript : "records"
+    Session ||--o{ TurnMetric : "generates"
+
+    User {
+        string id PK
+        string email
+        datetime createdAt
+    }
+    Session {
+        string id PK
+        string ip
+        datetime startedAt
+        datetime endedAt
+    }
+    Transcript {
+        string id PK
+        string sessionId FK
+        string role
+        string content
+        boolean interrupted
+    }
+    TurnMetric {
+        string id PK
+        string sessionId FK
+        int ttfaMs
+        int llmFirstTokenMs
+        int sentence1Ms
+    }
+```
+
+* **`Session`**: Pinned to each WebSocket connection. Records client IP, session start/end, and total duration.
+* **`Transcript`**: Asynchronously persists every spoken turn, role (`user`, `assistant`, `tool`), and whether it was interrupted.
+* **`TurnMetric`**: Stores per-turn latency milestones (`ttfaMs`, `llmFirstTokenMs`, `sentence1Ms`) for telemetry rollups and analytics.
+
+---
+
+### UML Class Diagram (Component Architecture)
+
+```mermaid
+classDiagram
+    direction TB
+
+    class SessionManager {
+        -string sessionId
+        -string ip
+        -SessionState state
+        +handleSession() void
+        +setState(state) void
+        +triggerBargeIn() void
+        +handleFinalTranscript() void
+    }
+
+    class BargeInManager {
+        -ActiveTurn activeTurn
+        -ChatMessage[] history
+        +startTurn(prompt) TurnHandle
+        +interrupt() InterruptedInfo
+        +recordSpokenSentence() void
+    }
+
+    class SentenceChunker {
+        -string buffer
+        +push(delta) string[]
+        +flush() string[]
+    }
+
+    class TurnTimer {
+        -string turnId
+        -number eosTimestamp
+        +markLlmFirstToken() void
+        +markSentence1() void
+        +markFirstAudio() void
+        +getMetrics() TurnMetrics
+    }
+
+    class DeepgramASR {
+        +sendAudio(pcmChunk) void
+        +finish() void
+    }
+
+    class LLMProvider {
+        +streamAssistantReply() void
+    }
+
+    class VoiceTools {
+        +getWeather() string
+        +getCurrentTime() string
+        +setReminder() string
+    }
+
+    SessionManager --> BargeInManager : manages
+    SessionManager --> SentenceChunker : chunks tokens
+    SessionManager --> TurnTimer : observes latency
+    SessionManager --> DeepgramASR : streams audio
+    SessionManager --> LLMProvider : streams reasoning
+    LLMProvider --> VoiceTools : executes
+```
+
+---
+
 ## Why these design decisions?
 
 | Decision | Rationale |
