@@ -268,8 +268,6 @@ The evaluation pipeline measures empirical latency percentiles from structured s
 | BullMQ queue | Post-call: avg TTFA, turn count, interrupted turns |
 | **Not used for** | Audio frames, partial transcripts, LLM tokens |
 
-> Interview point: a WebSocket session is pinned to one process. Scaling out requires sticky routing (e.g. nginx `ip_hash`) or a session registry. This project demonstrates the registry; sticky routing is left for production.
-
 ---
 
 ## Prometheus Metrics
