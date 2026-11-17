@@ -1,6 +1,8 @@
 import { Queue, Worker, type Job } from "bullmq";
 import { getRedis } from "./redis.js";
 import { logger } from "./logger.js";
+import { persistSession, type PersistedSession } from "./db.js";
+import { captureError } from "./sentry.js";
 
 export interface TurnSummary {
   turnId: string;
@@ -9,15 +11,12 @@ export interface TurnSummary {
   ttfaMs?: number | null;
   llmFirstTokenMs?: number | null;
   sentence1Ms?: number | null;
+  totalLlmMs?: number | null;
   interrupted?: boolean;
 }
 
-export interface PostCallJobData {
-  sessionId: string;
-  ip: string;
-  durationMs: number;
+export interface PostCallJobData extends PersistedSession {
   turnCount: number;
-  turns: TurnSummary[];
 }
 
 const QUEUE_NAME = "post-call-summary";
@@ -25,6 +24,28 @@ let postCallQueue: Queue<PostCallJobData> | null = null;
 let postCallWorker: Worker<PostCallJobData> | null = null;
 
 const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379";
+
+async function processPostCallSummary(data: PostCallJobData): Promise<void> {
+  await persistSession(data);
+
+  const validTtfas = data.turns
+    .map((turn) => turn.ttfaMs)
+    .filter((ttfa): ttfa is number => typeof ttfa === "number" && ttfa > 0);
+  const avgTtfa = validTtfas.length
+    ? Math.round(validTtfas.reduce((total, ttfa) => total + ttfa, 0) / validTtfas.length)
+    : null;
+
+  logger.info(
+    {
+      sessionId: data.sessionId,
+      durationSeconds: Math.round(data.durationMs / 1000),
+      turnCount: data.turnCount,
+      avgTtfa,
+      interruptedTurns: data.turns.filter((turn) => turn.interrupted).length,
+    },
+    "Processed post-call summary"
+  );
+}
 
 export function initQueue(): void {
   try {
@@ -41,43 +62,15 @@ export function initQueue(): void {
     postCallWorker = new Worker<PostCallJobData>(
       QUEUE_NAME,
       async (job: Job<PostCallJobData>) => {
-        const { sessionId, durationMs, turnCount, turns } = job.data;
-        
-        // Calculate metrics rollups
-        const validTtfas = turns
-          .map((t) => t.ttfaMs)
-          .filter((t): t is number => typeof t === "number" && t > 0);
-
-        const avgTtfa = validTtfas.length
-          ? Math.round(validTtfas.reduce((a, b) => a + b, 0) / validTtfas.length)
-          : null;
-        const minTtfa = validTtfas.length ? Math.min(...validTtfas) : null;
-        const maxTtfa = validTtfas.length ? Math.max(...validTtfas) : null;
-        const interruptedTurns = turns.filter((t) => t.interrupted).length;
-
-        logger.info(
-          {
-            jobId: job.id,
-            sessionId,
-            durationSeconds: Math.round(durationMs / 1000),
-            turnCount,
-            interruptedTurns,
-            metrics: { avgTtfa, minTtfa, maxTtfa },
-          },
-          "Processed post-call summary job"
-        );
-
-        return {
-          processedAt: new Date().toISOString(),
-          avgTtfa,
-          interruptedTurns,
-        };
+        await processPostCallSummary(job.data);
+        return { processedAt: new Date().toISOString() };
       },
       { connection }
     );
 
     postCallWorker.on("failed", (job, err) => {
       logger.error({ jobId: job?.id, err }, "Post-call summary job failed");
+      captureError(err, { component: "post-call-queue" });
     });
 
     logger.info("BullMQ post-call queue initialized");
@@ -101,23 +94,7 @@ export async function enqueuePostCallSummary(data: PostCallJobData): Promise<voi
     }
   }
 
-  // Fallback inline computation
-  const validTtfas = data.turns
-    .map((t) => t.ttfaMs)
-    .filter((t): t is number => typeof t === "number" && t > 0);
-  const avgTtfa = validTtfas.length
-    ? Math.round(validTtfas.reduce((a, b) => a + b, 0) / validTtfas.length)
-    : null;
-
-  logger.info(
-    {
-      sessionId: data.sessionId,
-      durationSeconds: Math.round(data.durationMs / 1000),
-      turnCount: data.turnCount,
-      avgTtfa,
-    },
-    "[Inline Fallback] Call finished & metrics computed"
-  );
+  await processPostCallSummary(data);
 }
 
 export async function closeQueue(): Promise<void> {

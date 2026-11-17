@@ -1,5 +1,6 @@
 import { getCachedToolResult, setCachedToolResult } from "../redis.js";
 import { logger } from "../logger.js";
+import { fetchWithRetry, getTimeoutMs } from "../providers/request.js";
 
 export interface ToolDefinition {
   type: "function";
@@ -88,7 +89,7 @@ export async function executeTool(
   name: string,
   args: Record<string, any>
 ): Promise<string> {
-  const log = logger.child({ tool: name, args });
+  const log = logger.child({ tool: name });
   log.info("Executing voice tool");
 
   switch (name) {
@@ -98,7 +99,7 @@ export async function executeTool(
 
       const cached = await getCachedToolResult(cacheKey);
       if (cached) {
-        log.info({ location, cached: true }, "Returning cached weather result");
+        log.info({ cached: true }, "Returning cached weather result");
         return cached;
       }
 
@@ -108,45 +109,62 @@ export async function executeTool(
 
         if (!coords) {
           // Public geocoding lookup
-          const geoRes = await fetch(
-            `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`
-          );
-          if (geoRes.ok) {
-            const geoData = (await geoRes.json()) as any;
-            if (geoData?.results?.[0]) {
-              coords = {
-                lat: geoData.results[0].latitude,
-                lon: geoData.results[0].longitude,
-                name: `${geoData.results[0].name}, ${geoData.results[0].country ?? ""}`,
-              };
+          const geoResponse = await fetchWithRetry(
+            `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`,
+            {},
+            {
+              provider: "Geocoding",
+              timeoutMs: getTimeoutMs("TOOL_REQUEST_TIMEOUT_MS", 10_000),
+              log,
             }
+          );
+          try {
+            if (geoResponse.response.ok) {
+              const geoData = (await geoResponse.response.json()) as any;
+              if (geoData?.results?.[0]) {
+                coords = {
+                  lat: geoData.results[0].latitude,
+                  lon: geoData.results[0].longitude,
+                  name: `${geoData.results[0].name}, ${geoData.results[0].country ?? ""}`,
+                };
+              }
+            }
+          } finally {
+            geoResponse.dispose();
           }
         }
 
         if (coords) {
-          const weatherRes = await fetch(
-            `https://api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lon}&current_weather=true`
-          );
-          if (weatherRes.ok) {
-            const wData = (await weatherRes.json()) as any;
-            const current = wData.current_weather;
-            if (current) {
-              const tempC = Math.round(current.temperature);
-              const wind = current.windspeed;
-              const result = `In ${coords.name}, it is currently ${tempC}°C with wind speeds of ${wind} km/h.`;
-              await setCachedToolResult(cacheKey, result, 120);
-              return result;
+          const weatherResponse = await fetchWithRetry(
+            `https://api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lon}&current_weather=true`,
+            {},
+            {
+              provider: "Weather",
+              timeoutMs: getTimeoutMs("TOOL_REQUEST_TIMEOUT_MS", 10_000),
+              log,
             }
+          );
+          try {
+            if (weatherResponse.response.ok) {
+              const wData = (await weatherResponse.response.json()) as any;
+              const current = wData.current_weather;
+              if (current) {
+                const tempC = Math.round(current.temperature);
+                const wind = current.windspeed;
+                const result = `In ${coords.name}, it is currently ${tempC}°C with wind speeds of ${wind} km/h.`;
+                await setCachedToolResult(cacheKey, result, 120);
+                return result;
+              }
+            }
+          } finally {
+            weatherResponse.dispose();
           }
         }
       } catch (err) {
-        log.warn({ err }, "Online weather fetch failed, using fallback estimate");
+        log.warn({ errorName: err instanceof Error ? err.name : "unknown" }, "Online weather fetch failed");
       }
 
-      // Robust fallback if external network is unavailable
-      const fallbackResult = `The weather in ${location} is pleasant at around 21°C with partly cloudy skies.`;
-      await setCachedToolResult(cacheKey, fallbackResult, 120);
-      return fallbackResult;
+      return `I could not retrieve current weather for ${location}. Please try again later.`;
     }
 
     case "get_current_time": {

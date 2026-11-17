@@ -52,9 +52,13 @@ type ServerMessage =
 export function useMic() {
   const [isListening, setIsListening] = useState(false);
   const [assistantState, setAssistantState] = useState<AssistantState>("idle");
+  const assistantStateRef = useRef<AssistantState>("idle");
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [metrics, setMetrics] = useState<LatencyMetrics | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [headphonesMode, setHeadphonesMode] = useState<boolean>(false);
+  const headphonesModeRef = useRef<boolean>(false);
+  headphonesModeRef.current = headphonesMode;
 
   const wsRef = useRef<WebSocket | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
@@ -131,11 +135,16 @@ export function useMic() {
     utterance.pitch = 1.0;
 
     utterance.onend = () => {
-      playNextSentence();
+      // 100ms decay margin to allow room reverb to decay before unmuting mic
+      setTimeout(() => {
+        playNextSentence();
+      }, 100);
     };
 
     utterance.onerror = () => {
-      playNextSentence();
+      setTimeout(() => {
+        playNextSentence();
+      }, 100);
     };
 
     window.speechSynthesis.speak(utterance);
@@ -163,6 +172,7 @@ export function useMic() {
 
       if (msg.type === "state") {
         setAssistantState(msg.state);
+        assistantStateRef.current = msg.state;
       }
 
       if (msg.type === "transcript.partial") {
@@ -354,6 +364,19 @@ export function useMic() {
 
       worklet.port.onmessage = (e: MessageEvent<{ pcm16: ArrayBuffer }>) => {
         if (ws.readyState === WebSocket.OPEN) {
+          // Acoustic echo suppression:
+          // In speaker mode, mute mic upload while the assistant is speaking so
+          // laptop speakers do not bleed back into Deepgram transcription.
+          const isAssistantSpeaking =
+            isPlayingRef.current ||
+            activeSourcesRef.current.size > 0 ||
+            assistantStateRef.current === "speaking" ||
+            (typeof window !== "undefined" && Boolean(window.speechSynthesis?.speaking));
+
+          if (!headphonesModeRef.current && isAssistantSpeaking) {
+            return;
+          }
+
           ws.send(e.data.pcm16);
         }
       };
@@ -395,6 +418,25 @@ export function useMic() {
     cleanup();
   }, []);
 
+  const interrupt = useCallback(() => {
+    speechQueueRef.current = [];
+    isPlayingRef.current = false;
+    nextPlayTimeRef.current = 0;
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    stopAllPcm();
+    pcmMutedRef.current = true;
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "stop" }));
+      setTimeout(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: "start", sessionId: crypto.randomUUID() }));
+        }
+      }, 150);
+    }
+  }, [stopAllPcm]);
+
   function cleanup() {
     wsRef.current?.close();
     wsRef.current = null;
@@ -416,7 +458,19 @@ export function useMic() {
     pcmTurnIdRef.current = null;
     setIsListening(false);
     setAssistantState("idle");
+    assistantStateRef.current = "idle";
   }
 
-  return { isListening, assistantState, transcripts, metrics, error, start, stop };
+  return {
+    isListening,
+    assistantState,
+    transcripts,
+    metrics,
+    error,
+    start,
+    stop,
+    interrupt,
+    headphonesMode,
+    setHeadphonesMode,
+  };
 }

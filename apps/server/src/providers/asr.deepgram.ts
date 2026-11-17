@@ -1,5 +1,6 @@
 import { createClient, LiveTranscriptionEvents } from "@deepgram/sdk";
 import type { Logger } from "pino";
+import { getTimeoutMs } from "./request.js";
 
 export interface ASRCallbacks {
   onPartial: (text: string) => void;
@@ -42,7 +43,34 @@ export function createDeepgramASR(
   let ready = false;
   let closed = false;
 
+  // Utterance accumulation: Deepgram emits is_final for interim segments;
+  // speech_final indicates the user has finished speaking the complete utterance.
+  let accumulated = "";
+  let fallbackTimer: NodeJS.Timeout | null = null;
+
+  const flushUtterance = () => {
+    if (fallbackTimer) {
+      clearTimeout(fallbackTimer);
+      fallbackTimer = null;
+    }
+    const finalUtterance = accumulated.trim();
+    if (finalUtterance) {
+      accumulated = "";
+      callbacks.onFinal(finalUtterance);
+    }
+  };
+
+  const connectTimeout = setTimeout(() => {
+    if (ready || closed) return;
+    closed = true;
+    const error = new Error("Deepgram connection timed out");
+    log.error("Deepgram connection timed out");
+    callbacks.onError(error);
+    conn.finish();
+  }, getTimeoutMs("ASR_CONNECT_TIMEOUT_MS", 10_000));
+
   conn.on(LiveTranscriptionEvents.Open, () => {
+    clearTimeout(connectTimeout);
     log.info("Deepgram connection open");
     ready = true;
     for (const chunk of queue) {
@@ -51,24 +79,50 @@ export function createDeepgramASR(
     queue.length = 0;
   });
 
-  conn.on(LiveTranscriptionEvents.Transcript, (data) => {
+  conn.on(LiveTranscriptionEvents.Transcript, (data: any) => {
     const alt = data?.channel?.alternatives?.[0];
-    const text: string = alt?.transcript ?? "";
-    if (!text.trim()) return;
+    const text: string = (alt?.transcript ?? "").trim();
+    const isFinal = Boolean(data?.is_final);
+    const speechFinal = Boolean(data?.speech_final);
 
-    if (data.is_final) {
-      callbacks.onFinal(text);
-    } else {
-      callbacks.onPartial(text);
+    if (isFinal) {
+      if (text) {
+        accumulated = accumulated ? `${accumulated} ${text}` : text;
+      }
+
+      if (speechFinal) {
+        // Endpointing detected: complete user turn finished
+        flushUtterance();
+      } else {
+        // Segment finalized but user is still speaking; show live partial
+        if (accumulated) {
+          callbacks.onPartial(accumulated);
+        }
+        // Fallback silence timer in case speech_final is dropped
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+        fallbackTimer = setTimeout(() => {
+          flushUtterance();
+        }, 700);
+      }
+    } else if (text) {
+      // Interim delta partial result
+      const livePartial = accumulated ? `${accumulated} ${text}` : text;
+      callbacks.onPartial(livePartial);
     }
   });
 
+  conn.on(LiveTranscriptionEvents.UtteranceEnd, () => {
+    flushUtterance();
+  });
+
   conn.on(LiveTranscriptionEvents.Error, (err) => {
-    log.error({ err }, "Deepgram error");
-    callbacks.onError(err instanceof Error ? err : new Error(String(err)));
+    const error = err instanceof Error ? err : new Error("Deepgram connection failed");
+    log.error({ errorName: error.name }, "Deepgram error");
+    callbacks.onError(error);
   });
 
   conn.on(LiveTranscriptionEvents.Close, () => {
+    clearTimeout(connectTimeout);
     log.info("Deepgram connection closed");
     if (!closed) callbacks.onClose();
   });

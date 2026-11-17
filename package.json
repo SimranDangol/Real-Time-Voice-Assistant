@@ -6,6 +6,9 @@
     "dev:web": "pnpm --dir apps/web dev",
     "dev:server": "pnpm --dir apps/server dev",
     "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --dir apps/server test",
+    "eval:latency": "pnpm --dir apps/server exec tsx ../../eval/latency-report.ts",
+    "eval:wer": "pnpm --dir apps/server exec tsx ../../eval/wer.ts"
   }
 }

@@ -30,10 +30,25 @@ jobs:
       - name: Run server unit tests
         run: pnpm --dir apps/server test
 
+      - name: Validate Prisma schema
+        env:
+          DATABASE_URL: postgresql://postgres:pass@localhost:5432/voiceassistant?schema=public
+        run: pnpm --dir apps/server exec prisma validate --schema prisma/schema.prisma
+
       - name: Typecheck backend & frontend
         run: |
+          pnpm --dir packages/shared typecheck
           pnpm --dir apps/server typecheck
           pnpm --dir apps/web typecheck
+          pnpm --dir eval exec tsc --noEmit
 
       - name: Build server
         run: pnpm --dir apps/server build
+
+      - name: Validate evaluation scripts
+        run: |
+          pnpm --dir eval wer
+          pnpm --dir eval exec tsx latency-report.ts --log fixtures/latency-smoke.jsonl
+
+      - name: Build Docker image
+        run: docker build --tag real-time-voice-assistant:ci .
