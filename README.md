@@ -6,14 +6,6 @@ A browser-based voice assistant targeting **sub-second time-to-first-audio** wit
 
 ---
 
-## Demo
-
-> **Demo video not yet provided.** Record a 2-minute demo and add its link here.
->
-> Suggested scenes: (1) normal Q&A with weather tool, (2) barge-in mid-sentence, (3) reminder tool, (4) latency dashboard visible.
-
----
-
 ## Architecture
 
 ```
