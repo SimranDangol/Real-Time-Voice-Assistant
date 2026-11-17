@@ -60,6 +60,8 @@ A browser-based voice assistant targeting **sub-second time-to-first-audio** wit
 
 ### UML Sequence Diagram (Streaming Turn & Barge-In)
 
+![UML Sequence Diagram — Streaming Turn & Barge-In](docs/diagrams/sequence-diagram.png)
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -103,6 +105,8 @@ sequenceDiagram
 
 ### Database Entity-Relationship Diagram (ERD)
 
+![Database Entity-Relationship Diagram](docs/diagrams/erd-diagram.png)
+
 ```mermaid
 erDiagram
     User ||--o{ Session : "initiates"
@@ -143,6 +147,8 @@ erDiagram
 ---
 
 ### UML Class Diagram (Component Architecture)
+
+![UML Class Diagram — Component Architecture](docs/diagrams/class-diagram.png)
 
 ```mermaid
 classDiagram
