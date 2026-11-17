@@ -49,7 +49,10 @@ export async function connectDatabase(): Promise<void> {
     logger.info("Connected to Postgres");
   } catch (error) {
     await client.$disconnect();
-    throw error;
+    if (process.env.NODE_ENV === "production") {
+      throw error;
+    }
+    logger.warn({ err: (error as Error).message }, "Postgres is unreachable; running with in-memory fallback");
   }
 }
 
