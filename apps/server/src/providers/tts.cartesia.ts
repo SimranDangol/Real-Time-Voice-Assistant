@@ -23,7 +23,7 @@ export function createCartesiaTTS(
   apiKey: string,
   callbacks: CartesiaTTSCallbacks,
   log: Logger,
-  voiceId = process.env.CARTESIA_VOICE_ID?.trim() || "6c756032-11c3-4be8-a120-74f9673fb700" // Harlow - Warm Support (verified public voice)
+  voiceId = process.env.CARTESIA_VOICE_ID?.trim() || "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4"
 ): CartesiaTTSHandle {
   const modelId = process.env.CARTESIA_MODEL_ID?.trim() || "sonic-latest";
   // context_id must be alphanumeric + underscores + hyphens only
