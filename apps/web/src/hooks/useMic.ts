@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { TranscriptEntry } from "@/components/TranscriptView";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080/ws";
@@ -81,6 +81,51 @@ export function useMic() {
   const pcmTurnIdRef = useRef<string | null>(null);
   // Drop stale PCM chunks that arrive after an interrupt, until the next turn
   const pcmMutedRef = useRef<boolean>(false);
+  const selectedVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
+
+  // Auto-detect best natural, high-quality browser voice
+  useEffect(() => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+
+    const pickBestVoice = () => {
+      const voices = window.speechSynthesis.getVoices();
+      if (!voices.length) return;
+
+      const priorityKeywords = [
+        "Google US English",
+        "Natural",
+        "Neural",
+        "Jenny",
+        "Aria",
+        "Guy",
+        "Samantha",
+        "Ava",
+        "Serena",
+        "Google UK English Female",
+      ];
+
+      for (const kw of priorityKeywords) {
+        const found = voices.find(
+          (v) => v.name.toLowerCase().includes(kw.toLowerCase()) && v.lang.startsWith("en")
+        );
+        if (found) {
+          selectedVoiceRef.current = found;
+          return;
+        }
+      }
+
+      const nonRobotic = voices.find(
+        (v) =>
+          v.lang.startsWith("en") &&
+          !v.name.toLowerCase().includes("desktop") &&
+          !v.name.toLowerCase().includes("david")
+      );
+      selectedVoiceRef.current = nonRobotic ?? voices.find((v) => v.lang.startsWith("en")) ?? null;
+    };
+
+    pickBestVoice();
+    window.speechSynthesis.onvoiceschanged = pickBestVoice;
+  }, []);
 
   const playPcm16Chunk = useCallback(async (data: ArrayBuffer | Blob) => {
     const ctx = contextRef.current;
@@ -131,7 +176,10 @@ export function useMic() {
     isPlayingRef.current = true;
     const nextText = speechQueueRef.current.shift()!;
     const utterance = new SpeechSynthesisUtterance(nextText);
-    utterance.rate = 1.05;
+    if (selectedVoiceRef.current) {
+      utterance.voice = selectedVoiceRef.current;
+    }
+    utterance.rate = 1.02;
     utterance.pitch = 1.0;
 
     utterance.onend = () => {
