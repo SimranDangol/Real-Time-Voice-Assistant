@@ -1,13 +1,11 @@
 # Real-Time Voice Assistant
 
-[![Live Demo](https://img.shields.io/badge/Demo-Live%20App-00ED64?style=for-the-badge&logo=vercel&logoColor=white)](https://real-time-voice-assistant-acno.vercel.app)
-[![API Status](https://img.shields.io/badge/API-Render-46E3B7?style=for-the-badge&logo=render&logoColor=white)](https://real-time-voice-assistant-ajzb.onrender.com)
-[![Tests](https://img.shields.io/badge/Tests-14%2F14%20Passing-brightgreen?style=for-the-badge)](https://github.com/SimranDangol/Real-Time-Voice-Assistant)
+[![Frontend](https://img.shields.io/badge/Frontend-Vercel-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://real-time-voice-assistant-acno.vercel.app)
+[![Backend](https://img.shields.io/badge/Backend-Render-46E3B7?style=for-the-badge&logo=render&logoColor=white)](https://real-time-voice-assistant-ajzb.onrender.com)
 
 A browser-based voice assistant targeting **sub-second time-to-first-audio** with real-time streaming transcription, LLM reasoning with function calling, barge-in cancellation, and streaming TTS.
 
-> 🌐 **Live Demo:** [real-time-voice-assistant-acno.vercel.app](https://real-time-voice-assistant-acno.vercel.app)  
-> ⚡ **Sub-second performance verified:** p50 Time-to-First-Audio (TTFA) of **877ms** with 10.3% WER across multi-condition benchmarks.
+> **Sub-second performance verified:** p50 Time-to-First-Audio (TTFA) of **877ms** with 10.3% WER across multi-condition benchmarks.
 
 ---
 
