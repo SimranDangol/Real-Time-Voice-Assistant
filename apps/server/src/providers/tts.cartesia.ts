@@ -59,6 +59,15 @@ export function createCartesiaTTS(
   ws.on("message", (data: WebSocket.Data) => {
     try {
       const message = JSON.parse(data.toString());
+
+      // Log any error Cartesia sends back (previously silently swallowed)
+      if (message.error || message.type === "error") {
+        const errMsg = message.error ?? message.message ?? JSON.stringify(message);
+        log.error({ cartesiaError: errMsg }, "Cartesia TTS API error");
+        callbacks.onError(new Error(`Cartesia error: ${errMsg}`));
+        return;
+      }
+
       if (message.data) {
         clearResponseTimeout();
         const audioBuffer = Buffer.from(message.data, "base64");
@@ -97,7 +106,7 @@ export function createCartesiaTTS(
   function sendPayload(text: string, isLast: boolean) {
     if (ws.readyState !== WebSocket.OPEN) return;
     const payload = {
-      model_id: "sonic-english",
+      model_id: "sonic-2",
       transcript: text,
       voice: {
         mode: "id",
@@ -110,6 +119,7 @@ export function createCartesiaTTS(
       },
       continue: !isLast,
     };
+    log.info({ model: "sonic-2", voiceId, textLength: text.length }, "Sending text to Cartesia");
     ws.send(JSON.stringify(payload));
     armResponseTimeout();
   }
