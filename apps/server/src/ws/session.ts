@@ -369,7 +369,7 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
         },
 
         onError(err) {
-          log.error({ turnId, errorName: err.name }, "LLM generation error");
+          log.error({ turnId, errorName: err.name, errorMessage: err.message }, "LLM generation error");
           captureError(err, { component: "llm" });
           if (!controller.signal.aborted) {
             send(socket, { type: "error", code: "llm_error", retryable: true });
