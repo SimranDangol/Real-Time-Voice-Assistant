@@ -407,7 +407,16 @@ export function useMic() {
         playbackCtxRef.current = playCtx;
       }
       if (playCtx.state === "suspended") await playCtx.resume();
-    } catch {}
+
+      // Play a 1-sample silent buffer to fully unlock Chrome's audio gate.
+      // Without this, Chrome may keep the context "allowed-but-suspended".
+      const silentBuf = playCtx.createBuffer(1, 1, playCtx.sampleRate);
+      const silentSrc = playCtx.createBufferSource();
+      silentSrc.buffer = silentBuf;
+      silentSrc.connect(playCtx.destination);
+      silentSrc.start();
+      console.log("[Audio] Playback context unlocked, state:", playCtx.state, "rate:", playCtx.sampleRate);
+    } catch (e) { console.warn("[Audio] Unlock error:", e); }
 
     // Unlock browser SpeechSynthesis with a silent utterance on click
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
@@ -447,6 +456,8 @@ export function useMic() {
 
     // 3. Open WebSocket with token
     const ws = new WebSocket(`${WS_URL}${tokenParam}`);
+    // Use ArrayBuffer directly — avoids Blob-to-ArrayBuffer conversion issues in Chrome
+    ws.binaryType = "arraybuffer";
     wsRef.current = ws;
 
     ws.onopen = async () => {
@@ -503,7 +514,12 @@ export function useMic() {
       } else if (e.data instanceof ArrayBuffer || e.data instanceof Blob) {
         // Drop chunks muted by barge-in; they belong to the interrupted turn
         // until the server announces a new one via audio.turn.
-        if (pcmMutedRef.current) return;
+        if (pcmMutedRef.current) {
+          console.log("[Audio] chunk DROPPED (muted)");
+          return;
+        }
+        const size = e.data instanceof ArrayBuffer ? e.data.byteLength : (e.data as Blob).size;
+        console.log("[Audio] PCM chunk received, bytes:", size, "| ctx state:", playbackCtxRef.current?.state ?? "null");
         if (isPlayingRef.current || speechQueueRef.current.length > 0) {
           speechQueueRef.current = [];
           isPlayingRef.current = false;
