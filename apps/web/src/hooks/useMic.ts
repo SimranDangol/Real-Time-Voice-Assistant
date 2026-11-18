@@ -179,10 +179,16 @@ export function useMic() {
       return;
     }
 
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume();
-      }
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+
+    // Chrome bug: speechSynthesis sometimes stalls. Cancel + small delay fixes it.
+    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+      window.speechSynthesis.cancel();
+      setTimeout(() => playNextSentence(), 150);
+      return;
+    }
+    if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
     }
 
     isPlayingRef.current = true;
@@ -191,20 +197,19 @@ export function useMic() {
     if (selectedVoiceRef.current) {
       utterance.voice = selectedVoiceRef.current;
     }
-    utterance.rate = 1.0;
+    utterance.rate = 1.05;
     utterance.pitch = 1.0;
+    utterance.volume = 1.0;
 
     utterance.onend = () => {
-      setTimeout(() => {
-        playNextSentence();
-      }, 100);
+      isPlayingRef.current = false;
+      setTimeout(() => playNextSentence(), 80);
     };
 
     utterance.onerror = (e) => {
-      console.warn("SpeechSynthesis error:", e);
-      setTimeout(() => {
-        playNextSentence();
-      }, 100);
+      console.warn("SpeechSynthesis error:", e.error, e);
+      isPlayingRef.current = false;
+      setTimeout(() => playNextSentence(), 150);
     };
 
     window.speechSynthesis.speak(utterance);
@@ -373,7 +378,9 @@ export function useMic() {
   const start = useCallback(async () => {
     setError(null);
 
-    // Initialize or resume AudioContext directly from user click gesture
+    // ── Unlock audio APIs from the user click gesture ────────────────────────
+    // Both AudioContext and speechSynthesis require a user gesture to start.
+    // We must initialize them here, inside the click handler.
     try {
       let ctx = contextRef.current;
       if (!ctx || ctx.state === "closed") {
@@ -384,6 +391,15 @@ export function useMic() {
         await ctx.resume();
       }
     } catch {}
+
+    // Unlock browser SpeechSynthesis with a silent utterance on click
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      try {
+        const unlock = new SpeechSynthesisUtterance(" ");
+        unlock.volume = 0;
+        window.speechSynthesis.speak(unlock);
+      } catch {}
+    }
 
     // 1. Request microphone access
     let stream: MediaStream;
