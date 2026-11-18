@@ -58,6 +58,7 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
   const bargeInManager = new BargeInManager();
   let asr: ASRHandle | null = null;
   let activeTurnId: string | null = null;
+  let currentAudioTurnId: string | null = null;
   let currentTurn: { turnId: string; timer: TurnTimer; userText: string } | null = null;
   let selectedTtsProvider: "cartesia" | "elevenlabs" | null = null;
   let receivedAudioForTurn = false;
@@ -112,20 +113,30 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
   const createTtsCallbacks = (provider: "cartesia" | "elevenlabs") => ({
     onAudioChunk(chunk: Buffer) {
       if (selectedTtsProvider !== provider) return;
-      if (activeTurnId && currentTurn?.turnId === activeTurnId) {
+      const turnId = activeTurnId ?? currentAudioTurnId;
+      if (turnId) {
         receivedAudioForTurn = true;
-        currentTurn.timer.markFirstAudio();
-        if (activeTurnId !== lastAudioTurnId) {
-          lastAudioTurnId = activeTurnId;
-          send(socket, { type: "audio.turn", turnId: activeTurnId });
+        currentTurn?.timer.markFirstAudio();
+        if (turnId !== lastAudioTurnId) {
+          lastAudioTurnId = turnId;
+          send(socket, { type: "audio.turn", turnId });
         }
         sendBinary(socket, chunk);
+        log.info({ turnId, bytes: chunk.length }, "Sent PCM audio chunk to client");
+      } else {
+        log.warn({ bytes: chunk.length }, "Dropped audio chunk: no active turn ID");
       }
     },
     onError(err: Error) {
       handleTtsFailure(provider, err);
     },
-    onDone() {},
+    onDone() {
+      log.info({ currentAudioTurnId }, "TTS streaming completed for turn");
+      currentAudioTurnId = null;
+      if (state === "speaking") {
+        setState("listening");
+      }
+    },
     onDisconnect() {
       handleTtsFailure(provider, new Error("Streaming TTS disconnected"));
     },
@@ -173,13 +184,14 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
    * is either thinking or speaking.
    */
   const triggerBargeIn = () => {
-    if ((state === "speaking" || state === "thinking") && activeTurnId) {
-      log.info({ turnId: activeTurnId, state }, "⚡ Barge-in triggered by user interruption");
+    if ((state === "speaking" || state === "thinking") && (activeTurnId || currentAudioTurnId)) {
+      const interruptedTurnId = activeTurnId ?? currentAudioTurnId ?? "unknown";
+      log.info({ turnId: interruptedTurnId, state }, "⚡ Barge-in triggered by user interruption");
       interruptedTurnsCounter.inc();
       
       const interruptInfo = bargeInManager.interrupt();
-      const interruptedTurnId = activeTurnId;
       activeTurnId = null;
+      currentAudioTurnId = null;
 
       // Close current TTS audio stream
       closeTts();
@@ -228,6 +240,7 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
 
     const { turnId, controller } = bargeInManager.startTurn(trimmed);
     activeTurnId = turnId;
+    currentAudioTurnId = turnId;
     receivedAudioForTurn = false;
     turnSentences = [];
     setState("thinking");
@@ -329,7 +342,12 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
             const remaining = chunker.flush();
             sentences = remaining ? [remaining] : [];
           }
-          sentences.forEach((sentence, index) => emitSentence(sentence, index === sentences.length - 1));
+          if (sentences.length > 0) {
+            sentences.forEach((sentence, index) => emitSentence(sentence, index === sentences.length - 1));
+          } else {
+            // All sentences were emitted during streaming deltas; signal end of text to TTS
+            ttsStream?.sendText("", true);
+          }
 
           send(socket, { type: "assistant.final", text: fullText });
 
@@ -356,8 +374,25 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
             interrupted: false,
           });
 
+          // Text generation is complete.
           activeTurnId = null;
-          setState("listening");
+          // If server TTS is active, audio is still streaming to client,
+          // so leave currentAudioTurnId active and let onDone() return state to "listening".
+          // If browser TTS or no stream, return to listening immediately.
+          if (!ttsStream) {
+            currentAudioTurnId = null;
+            setState("listening");
+          } else {
+            // Safety timeout: if TTS provider onDone() is delayed or lost, return to listening
+            setTimeout(() => {
+              if (currentAudioTurnId === turnId) {
+                currentAudioTurnId = null;
+                if (state === "speaking") {
+                  setState("listening");
+                }
+              }
+            }, 8000);
+          }
           log.info(
             {
               turnId,
