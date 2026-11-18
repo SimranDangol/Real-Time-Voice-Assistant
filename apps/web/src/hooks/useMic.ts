@@ -61,7 +61,12 @@ export function useMic() {
   headphonesModeRef.current = headphonesMode;
 
   const wsRef = useRef<WebSocket | null>(null);
-  const contextRef = useRef<AudioContext | null>(null);
+  // captureCtx: 16kHz context used only for mic capture worklet
+  const captureCtxRef = useRef<AudioContext | null>(null);
+  // playbackCtx: native-rate context used for PCM audio playback
+  const playbackCtxRef = useRef<AudioContext | null>(null);
+  // Legacy alias kept so cleanup() compiles
+  const contextRef = captureCtxRef;
   const streamRef = useRef<MediaStream | null>(null);
   const workletRef = useRef<AudioWorkletNode | null>(null);
   const userPartialIdRef = useRef<string | null>(null);
@@ -128,13 +133,16 @@ export function useMic() {
   }, []);
 
   const playPcm16Chunk = useCallback(async (data: ArrayBuffer | Blob) => {
-    const ctx = contextRef.current;
-    if (!ctx) return;
-
-    if (ctx.state === "suspended") {
-      try {
-        await ctx.resume();
-      } catch {}
+    // Use a dedicated playback AudioContext at the browser's native sample rate.
+    // This avoids conflicts with the 16kHz capture context and ensures the browser
+    // can actually play audio (native rate = no resampling issues).
+    let playCtx = playbackCtxRef.current;
+    if (!playCtx || playCtx.state === "closed") {
+      playCtx = new AudioContext(); // browser default sample rate (usually 44100 or 48000)
+      playbackCtxRef.current = playCtx;
+    }
+    if (playCtx.state === "suspended") {
+      try { await playCtx.resume(); } catch {}
     }
 
     const arrayBuffer = data instanceof Blob ? await data.arrayBuffer() : data;
@@ -145,18 +153,20 @@ export function useMic() {
       float32[i] = int16[i] / 32768.0;
     }
 
-    const audioBuffer = ctx.createBuffer(1, float32.length, 16000);
+    // Audio from Cartesia is 16kHz PCM. Tell the AudioContext the source rate
+    // so it resamples correctly to the playback device's native rate.
+    const audioBuffer = playCtx.createBuffer(1, float32.length, 16000);
     audioBuffer.getChannelData(0).set(float32);
 
-    const source = ctx.createBufferSource();
+    const source = playCtx.createBufferSource();
     activeSourcesRef.current.add(source);
     source.onended = () => {
       activeSourcesRef.current.delete(source);
     };
     source.buffer = audioBuffer;
-    source.connect(ctx.destination);
+    source.connect(playCtx.destination);
 
-    const startTime = Math.max(ctx.currentTime, nextPlayTimeRef.current);
+    const startTime = Math.max(playCtx.currentTime, nextPlayTimeRef.current);
     source.start(startTime);
     nextPlayTimeRef.current = startTime + audioBuffer.duration;
   }, []);
@@ -382,14 +392,21 @@ export function useMic() {
     // Both AudioContext and speechSynthesis require a user gesture to start.
     // We must initialize them here, inside the click handler.
     try {
-      let ctx = contextRef.current;
-      if (!ctx || ctx.state === "closed") {
-        ctx = new AudioContext({ sampleRate: 16000 });
-        contextRef.current = ctx;
+      // Capture context (16kHz, for mic worklet)
+      let capCtx = captureCtxRef.current;
+      if (!capCtx || capCtx.state === "closed") {
+        capCtx = new AudioContext({ sampleRate: 16000 });
+        captureCtxRef.current = capCtx;
       }
-      if (ctx.state === "suspended") {
-        await ctx.resume();
+      if (capCtx.state === "suspended") await capCtx.resume();
+
+      // Playback context (native rate, for AI voice output)
+      let playCtx = playbackCtxRef.current;
+      if (!playCtx || playCtx.state === "closed") {
+        playCtx = new AudioContext(); // browser default: 44100 or 48000 Hz
+        playbackCtxRef.current = playCtx;
       }
+      if (playCtx.state === "suspended") await playCtx.resume();
     } catch {}
 
     // Unlock browser SpeechSynthesis with a silent utterance on click
@@ -435,12 +452,11 @@ export function useMic() {
     ws.onopen = async () => {
       ws.send(JSON.stringify({ type: "start", sessionId: crypto.randomUUID() }));
 
-      // Reuse the AudioContext already created in start() (from user gesture).
-      // Creating a new one here would put it in "suspended" state (autoplay policy).
-      let ctx = contextRef.current;
+      // Reuse the capture AudioContext already created in start() (from user gesture).
+      let ctx = captureCtxRef.current;
       if (!ctx || ctx.state === "closed") {
         ctx = new AudioContext({ sampleRate: 16000 });
-        contextRef.current = ctx;
+        captureCtxRef.current = ctx;
       }
       if (ctx.state === "suspended") {
         try { await ctx.resume(); } catch {}
@@ -538,8 +554,10 @@ export function useMic() {
     wsRef.current = null;
     workletRef.current?.disconnect();
     workletRef.current = null;
-    contextRef.current?.close();
-    contextRef.current = null;
+    captureCtxRef.current?.close();
+    captureCtxRef.current = null;
+    playbackCtxRef.current?.close();
+    playbackCtxRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     userPartialIdRef.current = null;
