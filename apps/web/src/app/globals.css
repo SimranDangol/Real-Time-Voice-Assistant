@@ -21,17 +21,25 @@ html, body {
   min-height: 100vh;
 }
 
-/* Custom scrollbar */
+/* Custom visible scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #52525b #18181b;
+}
+
 ::-webkit-scrollbar {
-  width: 5px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: rgba(24, 24, 27, 0.7);
+  border-radius: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #27272a;
-  border-radius: 4px;
+  background: #52525b;
+  border-radius: 8px;
+  border: 1.5px solid #18181b;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3f3f46;
+  background: #71717a;
 }
