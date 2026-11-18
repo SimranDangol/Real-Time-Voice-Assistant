@@ -43,11 +43,14 @@ COPY apps/server/prisma ./apps/server/prisma
 COPY --from=build /app/apps/server/dist ./apps/server/dist
 
 # Install production-only dependencies
-RUN pnpm --filter @voice-assistant/server install --prod --frozen-lockfile
+RUN pnpm --filter @voice-assistant/server install --prod --frozen-lockfile \
+  && pnpm --dir apps/server exec prisma generate --schema prisma/schema.prisma
 
 # Run as non-root user for security
 ENV LOG_FILE_PATH=/tmp/voice-assistant/server.log
-RUN mkdir -p /tmp/voice-assistant && chown node:node /tmp/voice-assistant
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN mkdir -p /tmp/voice-assistant /home/node/.cache \
+  && chown -R node:node /app /tmp/voice-assistant /home/node
 USER node
 
 EXPOSE 8080
