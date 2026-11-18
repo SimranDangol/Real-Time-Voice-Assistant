@@ -37,6 +37,18 @@ app.use(
 app.use(express.json());
 
 // ── REST routes ───────────────────────────────────────────────────────────────
+app.get("/", (_req, res) => {
+  res.json({
+    name: "Real-Time Voice Assistant API",
+    status: "online",
+    endpoints: {
+      health: "/health",
+      metrics: "/metrics",
+      websocket: "/ws",
+    },
+  });
+});
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true, ts: Date.now() });
 });
