@@ -23,7 +23,7 @@ export function createCartesiaTTS(
   apiKey: string,
   callbacks: CartesiaTTSCallbacks,
   log: Logger,
-  voiceId = "a0e99841-438c-4a64-b679-ae501e7d6091" // Standard friendly conversational voice
+  voiceId = process.env.CARTESIA_VOICE_ID?.trim() ?? "694f9389-aac1-45b6-b726-9d9369183238" // Liam (stock voice)
 ): CartesiaTTSHandle {
   // context_id must be alphanumeric + underscores + hyphens only
   const contextId = `ctx_${Date.now()}_${Math.random().toString(36).replace(/[^a-z0-9]/g, "")}`;
