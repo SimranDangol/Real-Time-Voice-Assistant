@@ -23,8 +23,9 @@ export function createCartesiaTTS(
   apiKey: string,
   callbacks: CartesiaTTSCallbacks,
   log: Logger,
-  voiceId = process.env.CARTESIA_VOICE_ID?.trim() ?? "694f9389-aac1-45b6-b726-9d9369183238" // Liam (stock voice)
+  voiceId = process.env.CARTESIA_VOICE_ID?.trim() || "6c756032-11c3-4be8-a120-74f9673fb700" // Harlow - Warm Support (verified public voice)
 ): CartesiaTTSHandle {
+  const modelId = process.env.CARTESIA_MODEL_ID?.trim() || "sonic-latest";
   // context_id must be alphanumeric + underscores + hyphens only
   const contextId = `ctx_${Date.now()}_${Math.random().toString(36).replace(/[^a-z0-9]/g, "")}`;
   const wsUrl = `wss://api.cartesia.ai/tts/websocket?api_key=${apiKey}&cartesia_version=2024-06-10`;
@@ -108,7 +109,7 @@ export function createCartesiaTTS(
   function sendPayload(text: string, isLast: boolean) {
     if (ws.readyState !== WebSocket.OPEN) return;
     const payload = {
-      model_id: "sonic-2",
+      model_id: modelId,
       transcript: text,
       context_id: contextId,
       voice: {
@@ -122,7 +123,7 @@ export function createCartesiaTTS(
       },
       continue: !isLast,
     };
-    log.info({ model: "sonic-2", voiceId, textLength: text.length }, "Sending text to Cartesia");
+    log.info({ model: modelId, voiceId, textLength: text.length }, "Sending text to Cartesia");
     ws.send(JSON.stringify(payload));
     armResponseTimeout();
   }

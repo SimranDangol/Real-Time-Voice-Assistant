@@ -61,12 +61,12 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
   let currentTurn: { turnId: string; timer: TurnTimer; userText: string } | null = null;
   let selectedTtsProvider: "cartesia" | "elevenlabs" | null = null;
   let receivedAudioForTurn = false;
-  let lastTtsSentence: {
+  let turnSentences: Array<{
     turnId: string;
     sentenceIndex: number;
     text: string;
     isLast: boolean;
-  } | null = null;
+  }> = [];
   const failedTtsProviders = new Set<"cartesia" | "elevenlabs">();
 
   // Track session registration in Redis & Prometheus
@@ -93,15 +93,19 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
     failedStream?.close();
 
     const fallback = ensureTts();
-    if (activeTurnId && lastTtsSentence?.turnId === activeTurnId && !receivedAudioForTurn) {
+    if (!receivedAudioForTurn && turnSentences.length > 0) {
       if (fallback) {
-        fallback.sendText(lastTtsSentence.text, lastTtsSentence.isLast);
+        for (const s of turnSentences) {
+          fallback.sendText(s.text, s.isLast);
+        }
       } else {
-        send(socket, {
-          type: "assistant.sentence",
-          ...lastTtsSentence,
-          audio: "browser",
-        });
+        for (const s of turnSentences) {
+          send(socket, {
+            type: "assistant.sentence",
+            ...s,
+            audio: "browser",
+          });
+        }
       }
     }
   };
@@ -225,7 +229,7 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
     const { turnId, controller } = bargeInManager.startTurn(trimmed);
     activeTurnId = turnId;
     receivedAudioForTurn = false;
-    lastTtsSentence = null;
+    turnSentences = [];
     setState("thinking");
 
     const timer = new TurnTimer(turnId);
@@ -257,7 +261,7 @@ export function handleSession(socket: WebSocket, sessionId: string, ip: string):
         });
       }
 
-      lastTtsSentence = { turnId, sentenceIndex, text: sentence, isLast };
+      turnSentences.push({ turnId, sentenceIndex, text: sentence, isLast });
       ttsStream?.sendText(sentence, isLast);
       send(socket, {
         type: "assistant.sentence",
