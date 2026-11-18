@@ -25,6 +25,8 @@ export function createCartesiaTTS(
   log: Logger,
   voiceId = "a0e99841-438c-4a64-b679-ae501e7d6091" // Standard friendly conversational voice
 ): CartesiaTTSHandle {
+  // context_id must be alphanumeric + underscores + hyphens only
+  const contextId = `ctx_${Date.now()}_${Math.random().toString(36).replace(/[^a-z0-9]/g, "")}`;
   const wsUrl = `wss://api.cartesia.ai/tts/websocket?api_key=${apiKey}&cartesia_version=2024-06-10`;
   const ws = new WebSocket(wsUrl, {
     handshakeTimeout: getTimeoutMs("TTS_CONNECT_TIMEOUT_MS", 10_000),
@@ -108,6 +110,7 @@ export function createCartesiaTTS(
     const payload = {
       model_id: "sonic-2",
       transcript: text,
+      context_id: contextId,
       voice: {
         mode: "id",
         id: voiceId,
