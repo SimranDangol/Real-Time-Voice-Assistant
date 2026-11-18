@@ -131,6 +131,12 @@ export function useMic() {
     const ctx = contextRef.current;
     if (!ctx) return;
 
+    if (ctx.state === "suspended") {
+      try {
+        await ctx.resume();
+      } catch {}
+    }
+
     const arrayBuffer = data instanceof Blob ? await data.arrayBuffer() : data;
     const int16 = new Int16Array(arrayBuffer);
     const float32 = new Float32Array(int16.length);
@@ -173,23 +179,29 @@ export function useMic() {
       return;
     }
 
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
+    }
+
     isPlayingRef.current = true;
     const nextText = speechQueueRef.current.shift()!;
     const utterance = new SpeechSynthesisUtterance(nextText);
     if (selectedVoiceRef.current) {
       utterance.voice = selectedVoiceRef.current;
     }
-    utterance.rate = 1.02;
+    utterance.rate = 1.0;
     utterance.pitch = 1.0;
 
     utterance.onend = () => {
-      // 100ms decay margin to allow room reverb to decay before unmuting mic
       setTimeout(() => {
         playNextSentence();
       }, 100);
     };
 
-    utterance.onerror = () => {
+    utterance.onerror = (e) => {
+      console.warn("SpeechSynthesis error:", e);
       setTimeout(() => {
         playNextSentence();
       }, 100);
@@ -361,6 +373,18 @@ export function useMic() {
   const start = useCallback(async () => {
     setError(null);
 
+    // Initialize or resume AudioContext directly from user click gesture
+    try {
+      let ctx = contextRef.current;
+      if (!ctx || ctx.state === "closed") {
+        ctx = new AudioContext({ sampleRate: 16000 });
+        contextRef.current = ctx;
+      }
+      if (ctx.state === "suspended") {
+        await ctx.resume();
+      }
+    } catch {}
+
     // 1. Request microphone access
     let stream: MediaStream;
     try {
@@ -395,8 +419,16 @@ export function useMic() {
     ws.onopen = async () => {
       ws.send(JSON.stringify({ type: "start", sessionId: crypto.randomUUID() }));
 
-      const ctx = new AudioContext({ sampleRate: 16000 });
-      contextRef.current = ctx;
+      // Reuse the AudioContext already created in start() (from user gesture).
+      // Creating a new one here would put it in "suspended" state (autoplay policy).
+      let ctx = contextRef.current;
+      if (!ctx || ctx.state === "closed") {
+        ctx = new AudioContext({ sampleRate: 16000 });
+        contextRef.current = ctx;
+      }
+      if (ctx.state === "suspended") {
+        try { await ctx.resume(); } catch {}
+      }
 
       try {
         await ctx.audioWorklet.addModule("/audio-processor.worklet.js");
